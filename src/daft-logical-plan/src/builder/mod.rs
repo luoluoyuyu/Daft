@@ -45,7 +45,7 @@ use crate::{
         self, Limit, Offset, SetQuantifier, UnionStrategy,
         join::{JoinOptions, JoinPredicate},
     },
-    optimization::{OptimizerBuilder, OptimizerConfig},
+    optimization::{Optimizer, OptimizerBuilder, OptimizerConfig},
     partitioning::{HashRepartitionConfig, RandomShuffleConfig, RepartitionSpec},
     sink_info::{FormatSinkOption, OutputFileInfo, SinkInfo},
     source_info::{GlobScanInfo, InMemoryInfo, SourceInfo},
@@ -94,6 +94,48 @@ impl From<&LogicalPlanBuilder> for LogicalPlanRef {
 impl From<LogicalPlanRef> for LogicalPlanBuilder {
     fn from(plan: LogicalPlanRef) -> Self {
         Self::new(plan, None)
+    }
+}
+
+/// A compiled logical plan boundary between parsing/planning and runtime lowering.
+///
+/// The unoptimized plan is preserved for observability/debugging while the runtime-facing
+/// path consumes the optimized plan.
+#[derive(Clone, PartialEq, Eq)]
+#[cfg_attr(debug_assertions, derive(Debug))]
+pub struct CompiledLogicalPlan {
+    unoptimized_plan: Arc<LogicalPlan>,
+    optimized_plan: Arc<LogicalPlan>,
+    config: Option<Arc<DaftPlanningConfig>>,
+}
+
+impl CompiledLogicalPlan {
+    pub fn new(
+        unoptimized_plan: Arc<LogicalPlan>,
+        optimized_plan: Arc<LogicalPlan>,
+        config: Option<Arc<DaftPlanningConfig>>,
+    ) -> Self {
+        Self {
+            unoptimized_plan,
+            optimized_plan,
+            config,
+        }
+    }
+
+    pub fn unoptimized_plan(&self) -> LogicalPlanRef {
+        self.unoptimized_plan.clone()
+    }
+
+    pub fn optimized_plan(&self) -> LogicalPlanRef {
+        self.optimized_plan.clone()
+    }
+
+    pub fn unoptimized_builder(&self) -> LogicalPlanBuilder {
+        LogicalPlanBuilder::new(self.unoptimized_plan.clone(), self.config.clone())
+    }
+
+    pub fn optimized_builder(&self) -> LogicalPlanBuilder {
+        LogicalPlanBuilder::new(self.optimized_plan.clone(), self.config.clone())
     }
 }
 
@@ -941,91 +983,13 @@ impl LogicalPlanBuilder {
         Ok(self.with_new_plan(logical_plan))
     }
 
-    /// Async equivalent of `optimize`
-    /// This is safe to call from a tokio runtime
-    pub fn optimize_async(
-        &self,
+    fn build_optimizer(
+        config: Option<&Arc<DaftPlanningConfig>>,
         execution_config: Arc<DaftExecutionConfig>,
-    ) -> impl Future<Output = DaftResult<Self>> {
-        let cfg = self.config.clone();
-
-        // Run LogicalPlan optimizations
-        let unoptimized_plan = self.build();
-        let (tx, rx) = tokio::sync::oneshot::channel();
-
-        std::thread::spawn(move || {
-            let optimizer = OptimizerBuilder::default()
-                .when(
-                    cfg.as_ref()
-                        .map(|conf| conf.enable_strict_filter_pushdown)
-                        .unwrap_or(false),
-                    |builder| {
-                        builder.with_optimizer_config(OptimizerConfig {
-                            strict_pushdown: true,
-                            ..Default::default()
-                        })
-                    },
-                )
-                .with_default_optimizations()
-                .when(
-                    !cfg.as_ref()
-                        .is_some_and(|conf| conf.disable_join_reordering),
-                    |builder| builder.reorder_joins(Some(execution_config.clone())),
-                )
-                .simplify_expressions()
-                .split_granular_projections()
-                .enrich_with_stats(Some(execution_config))
-                .build();
-
-            let optimized_plan = optimizer.optimize(
-                unoptimized_plan,
-                |new_plan, rule_batch, pass, transformed, seen| {
-                    if transformed {
-
-                        log::debug!(
-                            "Rule batch {:?} transformed plan on pass {}, and produced {} plan:\n{}",
-                            rule_batch,
-                            pass,
-                            if seen { "an already seen" } else { "a new" },
-                            new_plan.repr_ascii(true),
-                        );
-                    } else {
-                        log::debug!(
-                            "Rule batch {:?} did NOT transform plan on pass {} for plan:\n{}",
-                            rule_batch,
-                            pass,
-                            new_plan.repr_ascii(true),
-                        );
-                    }
-                },
-            );
-            tx.send(optimized_plan).unwrap();
-        });
-
-        let cfg = self.config.clone();
-        async move {
-            rx.await
-                .map_err(|e| {
-                    DaftError::InternalError(format!("Error optimizing logical plan: {:?}", e))
-                })?
-                .map(|plan| Self::new(plan, cfg))
-        }
-    }
-
-    /// optimize the logical plan
-    ///
-    /// **Important**: Do not call this method from the main thread as there is a `block_on` call deep within this method
-    /// Calling will result in a runtime panic
-    pub fn optimize(&self, execution_config: Arc<DaftExecutionConfig>) -> DaftResult<Self> {
-        // TODO: remove the `block_on` to make this method safe to call from the main thread
-
-        let cfg = self.config.clone();
-
-        let unoptimized_plan = self.build();
-
-        let optimizer = OptimizerBuilder::default()
+    ) -> Optimizer {
+        OptimizerBuilder::default()
             .when(
-                cfg.as_ref()
+                config
                     .map(|conf| conf.enable_strict_filter_pushdown)
                     .unwrap_or(false),
                 |builder| {
@@ -1038,16 +1002,23 @@ impl LogicalPlanBuilder {
             .with_default_optimizations()
             .enrich_with_stats(Some(execution_config.clone()))
             .when(
-                !cfg.as_ref()
-                    .is_some_and(|conf| conf.disable_join_reordering),
+                !config.is_some_and(|conf| conf.disable_join_reordering),
                 |builder| builder.reorder_joins(Some(execution_config.clone())),
             )
             .simplify_expressions()
             .split_granular_projections()
             .enrich_with_stats(Some(execution_config))
-            .build();
+            .build()
+    }
 
-        let optimized_plan = optimizer.optimize(
+    fn optimize_plan(
+        config: Option<&Arc<DaftPlanningConfig>>,
+        unoptimized_plan: Arc<LogicalPlan>,
+        execution_config: Arc<DaftExecutionConfig>,
+    ) -> DaftResult<Arc<LogicalPlan>> {
+        let optimizer = Self::build_optimizer(config, execution_config);
+
+        optimizer.optimize(
             unoptimized_plan,
             |new_plan, rule_batch, pass, transformed, seen| {
                 if transformed {
@@ -1067,16 +1038,75 @@ impl LogicalPlanBuilder {
                     );
                 }
             },
-        )?;
+        )
+    }
 
-        // Assign node IDs to the optimized plan
-        let builder = if std::env::var("DAFT_INSTRUMENT_LOGICAL_PLAN").is_ok() {
-            let optimized_plan_with_node_ids = Self::assign_node_ids(optimized_plan)?;
-            Self::new(optimized_plan_with_node_ids, cfg)
+    fn compile_plan(
+        unoptimized_plan: Arc<LogicalPlan>,
+        config: Option<Arc<DaftPlanningConfig>>,
+        execution_config: Arc<DaftExecutionConfig>,
+    ) -> DaftResult<CompiledLogicalPlan> {
+        let optimized_plan =
+            Self::optimize_plan(config.as_ref(), unoptimized_plan.clone(), execution_config)?;
+        let optimized_plan = if std::env::var("DAFT_INSTRUMENT_LOGICAL_PLAN").is_ok() {
+            Self::assign_node_ids(optimized_plan)?
         } else {
-            Self::new(optimized_plan, cfg)
+            optimized_plan
         };
-        Ok(builder)
+
+        Ok(CompiledLogicalPlan::new(
+            unoptimized_plan,
+            optimized_plan,
+            config,
+        ))
+    }
+
+    pub fn compile_async(
+        &self,
+        execution_config: Arc<DaftExecutionConfig>,
+    ) -> impl Future<Output = DaftResult<CompiledLogicalPlan>> {
+        let cfg = self.config.clone();
+        let unoptimized_plan = self.build();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+
+        std::thread::spawn(move || {
+            let compiled_plan = Self::compile_plan(unoptimized_plan, cfg, execution_config);
+            // Receiver may be dropped if the future is cancelled; no Debug on CompiledLogicalPlan in release.
+            let _ = tx.send(compiled_plan);
+        });
+
+        async move {
+            rx.await.map_err(|e| {
+                DaftError::InternalError(format!("Error optimizing logical plan: {:?}", e))
+            })?
+        }
+    }
+
+    /// Async equivalent of `optimize`
+    /// This is safe to call from a tokio runtime
+    pub fn optimize_async(
+        &self,
+        execution_config: Arc<DaftExecutionConfig>,
+    ) -> impl Future<Output = DaftResult<Self>> {
+        let compile_fut = self.compile_async(execution_config);
+        async move {
+            let compiled_plan = compile_fut.await?;
+            Ok(compiled_plan.optimized_builder())
+        }
+    }
+
+    pub fn compile(&self, execution_config: Arc<DaftExecutionConfig>) -> DaftResult<CompiledLogicalPlan> {
+        Self::compile_plan(self.build(), self.config.clone(), execution_config)
+    }
+
+    /// optimize the logical plan
+    ///
+    /// **Important**: Do not call this method from the main thread as there is a `block_on` call deep within this method
+    /// Calling will result in a runtime panic
+    pub fn optimize(&self, execution_config: Arc<DaftExecutionConfig>) -> DaftResult<Self> {
+        // TODO: remove the `block_on` to make this method safe to call from the main thread
+        self.compile(execution_config)
+            .map(|compiled_plan| compiled_plan.optimized_builder())
     }
 
     /// Recursively walk the optimized plan and assign node IDs to each node
@@ -1149,6 +1179,31 @@ impl LogicalPlanBuilder {
 /// This lightweight proxy interface should hold as much of the Python-specific logic
 /// as possible, converting pyo3 wrapper type arguments into their underlying Rust-native types
 /// (e.g. PySchema -> Schema).
+#[cfg_attr(feature = "python", pyclass(module = "daft.daft", name = "CompiledLogicalPlan", frozen))]
+#[derive(Clone)]
+#[cfg_attr(debug_assertions, derive(Debug))]
+pub struct PyCompiledLogicalPlan {
+    pub compiled_plan: CompiledLogicalPlan,
+}
+
+impl PyCompiledLogicalPlan {
+    pub fn new(compiled_plan: CompiledLogicalPlan) -> Self {
+        Self { compiled_plan }
+    }
+}
+
+#[cfg(feature = "python")]
+#[pymethods]
+impl PyCompiledLogicalPlan {
+    pub fn unoptimized_plan(&self) -> PyLogicalPlanBuilder {
+        self.compiled_plan.unoptimized_builder().into()
+    }
+
+    pub fn optimized_plan(&self) -> PyLogicalPlanBuilder {
+        self.compiled_plan.optimized_builder().into()
+    }
+}
+
 #[cfg_attr(
     feature = "python",
     pyclass(name = "LogicalPlanBuilder", from_py_object)
@@ -1696,6 +1751,14 @@ impl PyLogicalPlanBuilder {
         Ok(self.builder.schema().into())
     }
 
+    pub fn compile(
+        &self,
+        py: Python,
+        execution_config: PyDaftExecutionConfig,
+    ) -> PyResult<PyCompiledLogicalPlan> {
+        py.detach(|| Ok(self.builder.compile(execution_config.config)?.into()))
+    }
+
     /// Optimize the underlying logical plan, returning a new plan builder containing the optimized plan.
     pub fn optimize(&self, py: Python, execution_config: PyDaftExecutionConfig) -> PyResult<Self> {
         py.detach(|| Ok(self.builder.optimize(execution_config.config)?.into()))
@@ -1716,5 +1779,37 @@ impl PyLogicalPlanBuilder {
 impl From<LogicalPlanBuilder> for PyLogicalPlanBuilder {
     fn from(plan: LogicalPlanBuilder) -> Self {
         Self::new(plan)
+    }
+}
+
+impl From<CompiledLogicalPlan> for PyCompiledLogicalPlan {
+    fn from(compiled_plan: CompiledLogicalPlan) -> Self {
+        Self::new(compiled_plan)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use common_daft_config::DaftExecutionConfig;
+    use daft_core::prelude::{DataType, Field};
+
+    use crate::test::{dummy_scan_node, dummy_scan_operator};
+
+    #[test]
+    fn compile_matches_existing_optimize_path() {
+        let execution_config = Arc::new(DaftExecutionConfig::default());
+        let builder = dummy_scan_node(dummy_scan_operator(vec![Field::new("a", DataType::Int64)]));
+
+        let optimized = builder
+            .optimize(execution_config.clone())
+            .expect("builder optimization should succeed");
+        let compiled = builder
+            .compile(execution_config)
+            .expect("builder compilation should succeed");
+
+        assert_eq!(compiled.unoptimized_builder(), builder);
+        assert_eq!(compiled.optimized_builder(), optimized);
     }
 }

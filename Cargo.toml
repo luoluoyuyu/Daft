@@ -472,4 +472,8 @@ zero_sized_map_values = "allow"
 
 [workspace.package]
 edition = "2024"
-version = "0.3.0-dev0"
+# Local-version-tagged build of Daft for the unite-stream distribution. The
+# `+unite` PEP 440 local segment travels through maturin into the resulting
+# wheel filename (daft-0.3.0.dev0+unite-*.whl) so it can never collide with
+# any public PyPI daft release and unite-stream pins to this exact build.
+version = "0.3.0-dev0+unite"

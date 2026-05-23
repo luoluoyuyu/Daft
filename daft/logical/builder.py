@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any
 
 from daft.context import get_context
 from daft.daft import (
+    CompiledLogicalPlan as _CompiledLogicalPlan,
     CountMode,
     FileFormat,
     IOConfig,
@@ -51,6 +52,19 @@ def _apply_daft_planning_config_to_initializer(
     return wrapper
 
 
+class CompiledLogicalPlan:
+    """A compiled logical plan boundary between planning and runtime execution."""
+
+    def __init__(self, compiled_plan: _CompiledLogicalPlan) -> None:
+        self._compiled_plan = compiled_plan
+
+    def unoptimized_plan(self) -> LogicalPlanBuilder:
+        return LogicalPlanBuilder(self._compiled_plan.unoptimized_plan())
+
+    def optimized_plan(self) -> LogicalPlanBuilder:
+        return LogicalPlanBuilder(self._compiled_plan.optimized_plan())
+
+
 class LogicalPlanBuilder:
     """A logical plan builder for the Daft DataFrame."""
 
@@ -92,6 +106,11 @@ class LogicalPlanBuilder:
         """Optimize the underlying logical plan."""
         builder = self._builder.optimize(execution_config)
         return LogicalPlanBuilder(builder)
+
+    def compile(self, execution_config: PyDaftExecutionConfig) -> CompiledLogicalPlan:
+        """Compile the underlying logical plan into a runtime-ready logical artifact."""
+        compiled_plan = self._builder.compile(execution_config)
+        return CompiledLogicalPlan(compiled_plan)
 
     @classmethod
     @_apply_daft_planning_config_to_initializer

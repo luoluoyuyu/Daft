@@ -102,6 +102,44 @@ test: .venv build  ## Run tests
 	# make test EXTRA_ARGS="-v tests/dataframe/test_select.py::test_select_dataframe" # Run a single test method
 	HYPOTHESIS_MAX_EXAMPLES=$(HYPOTHESIS_MAX_EXAMPLES) $(VENV_BIN)/pytest -n auto --hypothesis-seed=$(HYPOTHESIS_SEED) --ignore tests/integration $(EXTRA_ARGS)
 
+.PHONY: test-unite-stream
+test-unite-stream: .venv build  ## Run unite-stream package tests (separate from daft)
+	$(VENV_BIN)/pip install -e unite-stream
+	DAFT_RUNNER=native $(VENV_BIN)/pytest unite-stream/tests $(EXTRA_ARGS)
+
+# ---------------------------------------------------------------------------
+# unite-stream bundle: ship custom Daft wheel + unite-stream wheel together.
+#
+# Output: dist/unite-stream-bundle/
+#   wheels/daft-0.3.0.dev0+unite-*.whl     <-- custom Daft (maturin release)
+#   wheels/unite_stream-0.1.0-py3-none-any.whl
+#   requirements.txt                       <-- pip install -r this on the consumer side
+#   install.sh                             <-- one-shot installer
+#   README.txt
+# Plus a tarball dist/unite-stream-bundle.tar.gz of the above.
+# ---------------------------------------------------------------------------
+BUNDLE_DIR := dist/unite-stream-bundle
+BUNDLE_WHEELS := $(BUNDLE_DIR)/wheels
+
+.PHONY: bundle
+bundle: build-whl  ## Build the unite-stream + custom Daft double-wheel bundle
+	uv pip install --python $(VENV_BIN)/python build hatchling
+	$(VENV_BIN)/python -m build --wheel --outdir unite-stream/dist unite-stream
+	rm -rf $(BUNDLE_DIR)
+	mkdir -p $(BUNDLE_WHEELS)
+	cp target/wheels/daft-0.3.0.dev0+unite-*.whl $(BUNDLE_WHEELS)/
+	cp unite-stream/dist/unite_stream-*.whl $(BUNDLE_WHEELS)/
+	@printf -- "--find-links ./wheels\ndaft==0.3.0.dev0+unite\nunite-stream==0.1.0\n" > $(BUNDLE_DIR)/requirements.txt
+	@printf "#!/usr/bin/env bash\nset -euo pipefail\nHERE=\$$(cd -- \"\$$(dirname -- \"\$${BASH_SOURCE[0]}\")\" && pwd)\ncd \"\$$HERE\"\npython -m pip install --find-links \"\$$HERE/wheels\" -r \"\$$HERE/requirements.txt\"\n" > $(BUNDLE_DIR)/install.sh
+	@chmod +x $(BUNDLE_DIR)/install.sh
+	@printf "unite-stream bundle (custom Daft + unite-stream)\n\nQuick start:\n  ./install.sh                   # one-shot install into current python\n  pip install -r requirements.txt  # equivalent, manual\n\nContents:\n  wheels/daft-0.3.0.dev0+unite-*.whl   custom Daft build (Rust+Python)\n  wheels/unite_stream-0.1.0-*.whl       unite-stream pure-Python package\n" > $(BUNDLE_DIR)/README.txt
+	tar czf dist/unite-stream-bundle.tar.gz -C dist unite-stream-bundle
+	@echo ""
+	@echo "Bundle ready:"
+	@ls -lh $(BUNDLE_WHEELS) $(BUNDLE_DIR)/requirements.txt $(BUNDLE_DIR)/install.sh
+	@echo ""
+	@echo "Tarball: dist/unite-stream-bundle.tar.gz"
+
 .PHONY: doctests
 doctests: .venv
 	DAFT_BOLD_TABLE_HEADERS=0 DAFT_PROGRESS_BAR=0 $(VENV_BIN)/pytest --doctest-modules --continue-on-collection-errors --ignore=daft/functions/llm.py --ignore=daft/functions/ai/__init__.py daft/dataframe/dataframe.py daft/expressions/expressions.py daft/convert.py daft/udf/__init__.py daft/functions/ daft/datatype.py

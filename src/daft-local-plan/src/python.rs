@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use common_py_serde::impl_bincode_py_state_serialization;
-use daft_logical_plan::PyLogicalPlanBuilder;
+use daft_logical_plan::{LogicalPlanRef, PyCompiledLogicalPlan, PyLogicalPlanBuilder};
 use daft_micropartition::{MicroPartitionRef, python::PyMicroPartition};
 use daft_recordbatch::python::PyRecordBatch;
 use pyo3::{prelude::*, types::PyDict};
@@ -33,19 +33,16 @@ pub struct PyLocalPhysicalPlan {
     pub plan: LocalPhysicalPlanRef,
 }
 
-#[pymethods]
 impl PyLocalPhysicalPlan {
-    #[staticmethod]
-    fn from_logical_plan_builder(
+    fn from_logical_plan(
         py: Python<'_>,
-        logical_plan_builder: &PyLogicalPlanBuilder,
+        logical_plan: LogicalPlanRef,
         psets: HashMap<String, Vec<PyMicroPartition>>,
     ) -> PyResult<(Self, Py<PyDict>)> {
         let psets_mp: HashMap<String, Vec<MicroPartitionRef>> = psets
             .into_iter()
             .map(|(k, v)| (k, v.into_iter().map(|p| p.inner).collect()))
             .collect();
-        let logical_plan = logical_plan_builder.builder.build();
         let (physical_plan, inputs) = translate(&logical_plan, &psets_mp)?;
 
         let dict = PyDict::new(py);
@@ -71,6 +68,27 @@ impl PyLocalPhysicalPlan {
             },
             dict.into(),
         ))
+    }
+}
+
+#[pymethods]
+impl PyLocalPhysicalPlan {
+    #[staticmethod]
+    fn from_logical_plan_builder(
+        py: Python<'_>,
+        logical_plan_builder: &PyLogicalPlanBuilder,
+        psets: HashMap<String, Vec<PyMicroPartition>>,
+    ) -> PyResult<(Self, Py<PyDict>)> {
+        Self::from_logical_plan(py, logical_plan_builder.builder.build(), psets)
+    }
+
+    #[staticmethod]
+    fn from_compiled_logical_plan(
+        py: Python<'_>,
+        compiled_logical_plan: &PyCompiledLogicalPlan,
+        psets: HashMap<String, Vec<PyMicroPartition>>,
+    ) -> PyResult<(Self, Py<PyDict>)> {
+        Self::from_logical_plan(py, compiled_logical_plan.compiled_plan.optimized_plan(), psets)
     }
 
     fn shuffle_write_info(&self) -> Option<PyShuffleWriteInfo> {

@@ -37,6 +37,7 @@ from daft.errors import ExpressionTypeError
 from daft.execution.native_executor import NativeExecutor
 from daft.expressions import Expression, ExpressionsProjection, col, lit
 from daft.logical.builder import LogicalPlanBuilder
+from daft.plan_transport import deserialize_plan, serialize_plan
 from daft.recordbatch import MicroPartition, RecordBatch
 from daft.runners import get_or_create_runner
 from daft.runners.partitioning import (
@@ -327,6 +328,30 @@ class DataFrame:
                 "\n \nSet `show_all=True` to also see the Optimized and Physical plans. This will run the query optimizer.",
             )
         return None
+
+    @DataframePublicAPI
+    def to_plan_bytes(self) -> bytes:
+        """Serialize this lazy DataFrame plan for execution in another process.
+
+        Does not run the query. Pair with :meth:`from_plan_bytes` on a runtime worker.
+
+        Returns:
+            bytes: Cloudpickle payload containing the logical plan builder state.
+        """
+        return serialize_plan(self)
+
+    @classmethod
+    @DataframePublicAPI
+    def from_plan_bytes(cls, plan_bytes: bytes) -> "DataFrame":
+        """Restore a lazy DataFrame from :meth:`to_plan_bytes` output.
+
+        Args:
+            plan_bytes: Bytes produced by :meth:`to_plan_bytes` or :func:`daft.serialize_plan`.
+
+        Returns:
+            DataFrame: Lazy DataFrame ready for ``collect()`` or other materializing ops.
+        """
+        return deserialize_plan(plan_bytes)
 
     def num_partitions(self) -> int | None:
         """Returns the number of partitions that will be used to execute this DataFrame.

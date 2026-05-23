@@ -9,7 +9,7 @@ use common_metrics::Meter;
 use common_partitioning::Partition;
 use common_py_serde::impl_bincode_py_state_serialization;
 use daft_local_plan::python::PyExecutionStats;
-use daft_logical_plan::PyLogicalPlanBuilder;
+use daft_logical_plan::{PyCompiledLogicalPlan, PyLogicalPlanBuilder};
 use dashboard::DashboardStatisticsSubscriber;
 use futures::StreamExt;
 use progress_bar::FlotillaProgressBar;
@@ -86,6 +86,20 @@ impl PyDistributedPhysicalPlan {
     ) -> PyResult<Self> {
         let plan = DistributedPhysicalPlan::from_logical_plan_builder(
             &builder.builder,
+            query_id.into(),
+            config.config.clone(),
+        )?;
+        Ok(Self { plan })
+    }
+
+    #[staticmethod]
+    fn from_compiled_logical_plan(
+        compiled_plan: &PyCompiledLogicalPlan,
+        query_id: String,
+        config: &PyDaftExecutionConfig,
+    ) -> PyResult<Self> {
+        let plan = DistributedPhysicalPlan::from_logical_plan(
+            compiled_plan.compiled_plan.optimized_plan(),
             query_id.into(),
             config.config.clone(),
         )?;

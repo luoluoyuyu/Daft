@@ -39,19 +39,25 @@ pub(crate) struct DistributedPhysicalPlan {
 }
 
 impl DistributedPhysicalPlan {
-    pub fn from_logical_plan_builder(
-        builder: &LogicalPlanBuilder,
+    pub fn from_logical_plan(
+        logical_plan: Arc<LogicalPlan>,
         query_id: QueryID,
         config: Arc<DaftExecutionConfig>,
     ) -> DaftResult<Self> {
-        let logical_plan = builder.build();
-
         Ok(Self {
             query_idx: QUERY_IDX_COUNTER.fetch_add(1, Ordering::Relaxed),
             query_id,
             logical_plan,
             config,
         })
+    }
+
+    pub fn from_logical_plan_builder(
+        builder: &LogicalPlanBuilder,
+        query_id: QueryID,
+        config: Arc<DaftExecutionConfig>,
+    ) -> DaftResult<Self> {
+        Self::from_logical_plan(builder.build(), query_id, config)
     }
 
     pub fn idx(&self) -> QueryIdx {

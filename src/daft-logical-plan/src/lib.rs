@@ -14,7 +14,7 @@ pub mod stats;
 mod test;
 mod treenode;
 
-pub use builder::{LogicalPlanBuilder, PyLogicalPlanBuilder};
+pub use builder::{CompiledLogicalPlan, LogicalPlanBuilder, PyCompiledLogicalPlan, PyLogicalPlanBuilder};
 pub use daft_core::join::{JoinStrategy, JoinType};
 #[cfg(feature = "python")]
 use daft_scan::{
@@ -45,6 +45,7 @@ pub fn logical_plan_table_scan(
 
 #[cfg(feature = "python")]
 pub fn register_modules(parent: &Bound<PyModule>) -> PyResult<()> {
+    parent.add_class::<PyCompiledLogicalPlan>()?;
     parent.add_class::<PyLogicalPlanBuilder>()?;
     parent.add_class::<PyFileFormatConfig>()?;
     parent.add_class::<PyFormatSinkOption>()?;
