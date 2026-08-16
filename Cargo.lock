@@ -3181,6 +3181,8 @@ dependencies = [
  "daft-logical-plan",
  "daft-micropartition",
  "daft-protocol",
+ "daft-session",
+ "daft-sql",
  "prost 0.13.5",
  "sha2",
  "tokio",

@@ -65,6 +65,33 @@ message JobSubmitResponse {
   string job_id = 1;
 }
 
+// Submission payload for POST /v1/sql.
+//
+// SQL parsing happens entirely on the server: the Python client never
+// interprets the SQL string, it only ships the statement text plus the
+// in-memory DataFrame bindings it resolved from the caller's scope. The
+// server registers each binding as a named table, parses the SQL into a
+// logical plan with ``daft-sql``, and then executes it through the exact same
+// native / Python-worker path as a ``JobSubmitRequest``. The response is a
+// normal job id; poll GET /v1/jobs/{job_id} and
+// GET /v1/jobs/{job_id}/result as for any other job.
+message SqlSubmitRequest {
+  // SQL statement text, e.g. "SELECT * FROM sales WHERE amount > 100".
+  // Parsed by the runtime server; the client treats this as an opaque string.
+  string sql = 1;
+
+  // Named DataFrame bindings (CTEs) keyed by table name. Each value is a
+  // serialized ``daft.v1.LogicalPlan`` (``LogicalPlanBuilder.to_bytes()``),
+  // produced by the Python client from the DataFrames it resolved in the
+  // caller's scope. The server decodes each binding and registers it with the
+  // SQL session before planning the statement.
+  map<string, bytes> bindings = 2;
+
+  // In-memory partition sets keyed by the partition-set cache key of the
+  // submitting process (same framing as ``JobSubmitRequest.partition_sets``).
+  map<string, bytes> partition_sets = 3;
+}
+
 // Job status returned by GET/DELETE /v1/jobs/{job_id}.
 message JobStatus {
   string job_id = 1;

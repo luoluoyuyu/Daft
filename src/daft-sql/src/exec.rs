@@ -15,10 +15,16 @@ use crate::{
 };
 
 /// Execute result is always a dataframe.
-pub(crate) type DataFrame = Arc<LogicalPlan>;
+pub type DataFrame = Arc<LogicalPlan>;
 
 /// Execute SQL statements against the session.
-pub(crate) fn execute_statement(
+///
+/// This is the pure-Rust entry point used by the runtime server: it parses
+/// ``statement`` with the SQL planner, registering ``ctes`` (named DataFrame
+/// bindings) as in-scope tables, and returns the resulting logical plan.
+/// ``None`` is returned for statements that do not produce a result set
+/// (e.g. ``USE``). No Python interpreter is involved.
+pub fn execute_statement(
     sess: &Session,
     statement: &str,
     ctes: HashMap<String, LogicalPlanBuilder>,

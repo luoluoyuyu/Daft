@@ -89,6 +89,32 @@ class RuntimeClient:
         response.ParseFromString(self._request("POST", "/v1/jobs", request))
         return Job(response.job_id, self)
 
+    def submit_sql(
+        self,
+        sql: str,
+        bindings: dict[str, bytes],
+        *,
+        partition_sets: dict[str, bytes] | None = None,
+    ) -> Job:
+        """Submit a SQL statement plus named DataFrame bindings to the runtime.
+
+        The SQL text is parsed *on the server*: ``bindings`` maps the table
+        names visible to the statement to their serialized logical plans
+        (``LogicalPlanBuilder.to_bytes()``). SQL runs on the pure-Rust engine
+        only (no Python UDFs yet), and ``partition_sets`` carries in-memory
+        inputs as Arrow IPC blobs.
+        """
+        request = runtime_pb2.SqlSubmitRequest(
+            sql=sql,
+        )
+        for name, plan in bindings.items():
+            request.bindings[name] = plan
+        for key, blob in (partition_sets or {}).items():
+            request.partition_sets[key] = blob
+        response = runtime_pb2.JobSubmitResponse()
+        response.ParseFromString(self._request("POST", "/v1/sql", request))
+        return Job(response.job_id, self)
+
     def status(self, job_id: str) -> JobStatus:
         status = runtime_pb2.JobStatus()
         status.ParseFromString(self._request("GET", f"/v1/jobs/{job_id}"))

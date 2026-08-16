@@ -13,6 +13,8 @@ daft-local-plan = {path = "../daft-local-plan", default-features = false}
 daft-logical-plan = {path = "../daft-logical-plan", default-features = false}
 daft-micropartition = {path = "../daft-micropartition", default-features = false}
 daft-protocol = {path = "../daft-protocol"}
+daft-session = {path = "../daft-session", default-features = false}
+daft-sql = {path = "../daft-sql", default-features = false}
 prost = {workspace = true}
 sha2 = "0.10"
 tokio = {workspace = true, features = ["macros", "rt-multi-thread", "sync"]}

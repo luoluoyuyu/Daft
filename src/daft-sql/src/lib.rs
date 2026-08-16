@@ -1,13 +1,13 @@
 pub mod error;
 pub mod functions;
 
-mod exec;
 mod modules;
 mod planner;
 mod schema;
 mod statement;
 mod table_provider;
 
+pub mod exec;
 pub use planner::*;
 #[cfg(feature = "python")]
 pub mod python;

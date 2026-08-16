@@ -31,7 +31,7 @@ use axum::{
 use daft_protocol::{
     daft::v1::{
         Error as ProtoError, JobState as ProtoJobState, JobStatus, JobSubmitRequest,
-        JobSubmitResponse, JobResult, UdfArtifact, UdfArtifactMetadata,
+        JobSubmitResponse, JobResult, SqlSubmitRequest, UdfArtifact, UdfArtifactMetadata,
         UploadUdfArtifactRequest, UploadUdfArtifactResponse, WorkerInfo, WorkerList,
     },
     encode,
@@ -43,6 +43,7 @@ use uuid::Uuid;
 
 mod native;
 mod python_worker;
+mod sql;
 
 const PROTOBUF_CONTENT_TYPE: &str = "application/x-protobuf";
 
@@ -112,26 +113,84 @@ impl RuntimeState {
 impl RuntimeState {
     pub async fn submit(&self, request: JobSubmitRequest) -> Result<JobSubmitResponse, String> {
         let plan_bytes = request.logical_plan;
+        let artifact_files = self.snapshot_artifacts(&request.udf_artifact_ids).await?;
+        let id = self.create_job_record();
+        let state = self.clone();
+        let udfs = request.udfs;
+        let python_version = request.python_version;
+        let partition_sets = request.partition_sets;
+        let artifact_ids = request.udf_artifact_ids;
+        std::thread::spawn(move || {
+            state.run_job(id, artifact_ids, artifact_files, move |extra_paths| {
+                if udfs.is_empty() {
+                    native::execute_plan_native(plan_bytes, partition_sets)
+                } else {
+                    python_worker::execute_plan_with_python_worker(
+                        plan_bytes,
+                        partition_sets,
+                        extra_paths,
+                        udfs,
+                        python_version,
+                    )
+                }
+            });
+        });
+        Ok(JobSubmitResponse {
+            job_id: id.to_string(),
+        })
+    }
 
-        // Snapshot artifact (filename, payload) pairs now so the executor
-        // thread does not need to hold the async lock. The filename decides
-        // how the artifact is materialized on disk so the Python worker can
-        // import it (see `resolve_artifact_filename`).
-        let mut artifact_files: Vec<(String, Vec<u8>)> =
-            Vec::with_capacity(request.udf_artifact_ids.len());
-        {
-            let artifacts = self.udf_artifacts.read().await;
-            for artifact_id in &request.udf_artifact_ids {
-                let artifact = artifacts
-                    .get(artifact_id)
-                    .ok_or_else(|| format!("unknown UDF artifact {artifact_id}"))?;
-                artifact_files.push((
-                    resolve_artifact_filename(&artifact.metadata),
-                    artifact.payload.to_vec(),
-                ));
-            }
+    /// Submit a SQL statement for server-side parsing and execution.
+    ///
+    /// The client ships the raw statement text plus the serialized logical
+    /// plans of its DataFrame bindings; parsing happens entirely in Rust (see
+    /// [`crate::sql`]).
+    pub async fn submit_sql(
+        &self,
+        request: SqlSubmitRequest,
+    ) -> Result<JobSubmitResponse, String> {
+        if request.sql.trim().is_empty() {
+            return Err("SqlSubmitRequest.sql must not be empty".to_string());
         }
+        let id = self.create_job_record();
+        let state = self.clone();
+        let partition_sets = request.partition_sets;
+        let sql_text = request.sql;
+        let bindings = request.bindings;
+        std::thread::spawn(move || {
+            state.run_job(id, vec![], vec![], move |_extra_paths| {
+                crate::sql::execute_sql_job(&sql_text, bindings, partition_sets)
+            });
+        });
+        Ok(JobSubmitResponse {
+            job_id: id.to_string(),
+        })
+    }
 
+    /// Snapshot the (filename, payload) pairs of the requested UDF artifacts
+    /// so the executor thread does not need to hold the async lock. The
+    /// filename decides how the artifact is materialized on disk so the
+    /// Python worker can import it (see `resolve_artifact_filename`).
+    async fn snapshot_artifacts(
+        &self,
+        artifact_ids: &[String],
+    ) -> Result<Vec<(String, Vec<u8>)>, String> {
+        let mut artifact_files: Vec<(String, Vec<u8>)> = Vec::with_capacity(artifact_ids.len());
+        let artifacts = self.udf_artifacts.read().await;
+        for artifact_id in artifact_ids {
+            let artifact = artifacts
+                .get(artifact_id)
+                .ok_or_else(|| format!("unknown UDF artifact {artifact_id}"))?;
+            artifact_files.push((
+                resolve_artifact_filename(&artifact.metadata),
+                artifact.payload.to_vec(),
+            ));
+        }
+        Ok(artifact_files)
+    }
+
+    /// Create a new pending job record and return its id.
+    fn create_job_record(&self) -> Uuid {
         let id = Uuid::new_v4();
         self.jobs.lock().unwrap().insert(
             id,
@@ -142,38 +201,19 @@ impl RuntimeState {
                 result: None,
             },
         );
-
-        let state = self.clone();
-        let udfs = request.udfs;
-        let python_version = request.python_version;
-        let partition_sets = request.partition_sets;
-        let artifact_ids = request.udf_artifact_ids.clone();
-        std::thread::spawn(move || {
-            state.execute_job(
-                id,
-                plan_bytes,
-                partition_sets,
-                udfs,
-                python_version,
-                artifact_ids,
-                artifact_files,
-            );
-        });
-        Ok(JobSubmitResponse {
-            job_id: id.to_string(),
-        })
+        id
     }
 
     /// Run a submitted job to completion on a dedicated thread.
-    fn execute_job(
+    ///
+    /// ``execute`` receives the materialized UDF artifact directory paths
+    /// (empty when the job has no UDF artifacts) and runs the job body.
+    fn run_job(
         &self,
         id: Uuid,
-        plan_bytes: Vec<u8>,
-        partition_sets: HashMap<String, Vec<u8>>,
-        udfs: Vec<daft_protocol::daft::v1::UdfDescriptor>,
-        python_version: String,
         artifact_ids: Vec<String>,
         artifact_files: Vec<(String, Vec<u8>)>,
+        execute: impl FnOnce(Vec<String>) -> Result<Vec<u8>, String>,
     ) {
         {
             let mut jobs = self.jobs.lock().unwrap();
@@ -191,17 +231,7 @@ impl RuntimeState {
                 .iter()
                 .map(|dir| dir.to_string_lossy().into_owned())
                 .collect();
-            let result = if udfs.is_empty() {
-                native::execute_plan_native(plan_bytes, partition_sets)
-            } else {
-                python_worker::execute_plan_with_python_worker(
-                    plan_bytes,
-                    partition_sets,
-                    extra_paths,
-                    udfs,
-                    python_version,
-                )
-            };
+            let result = execute(extra_paths);
             // Best-effort cleanup of the per-job artifact staging directory.
             if let Some(dir) = artifact_dir {
                 let _ = std::fs::remove_dir_all(&dir);
@@ -332,6 +362,27 @@ async fn submit(
         }
     };
     match state.submit(request).await {
+        Ok(response) => proto_response(StatusCode::ACCEPTED, &response),
+        Err(e) => proto_response(StatusCode::BAD_REQUEST, &ProtoError { message: e }),
+    }
+}
+
+async fn submit_sql(
+    State(state): State<RuntimeState>,
+    body: Bytes,
+) -> Response {
+    let request = match SqlSubmitRequest::decode(body) {
+        Ok(request) => request,
+        Err(e) => {
+            return proto_response(
+                StatusCode::BAD_REQUEST,
+                &ProtoError {
+                    message: format!("invalid protobuf request: {e}"),
+                },
+            );
+        }
+    };
+    match state.submit_sql(request).await {
         Ok(response) => proto_response(StatusCode::ACCEPTED, &response),
         Err(e) => proto_response(StatusCode::BAD_REQUEST, &ProtoError { message: e }),
     }
@@ -492,6 +543,7 @@ pub fn router(state: RuntimeState) -> Router {
     let auth_state = state.clone();
     Router::new()
         .route("/v1/jobs", post(submit))
+        .route("/v1/sql", post(submit_sql))
         .route("/v1/jobs/{id}", get(status).delete(cancel))
         .route("/v1/jobs/{id}/result", get(result))
         .route("/v1/workers", get(workers))

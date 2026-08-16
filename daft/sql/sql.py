@@ -167,6 +167,33 @@ def sql(
     for alias, df in bindings.items():
         py_ctes[alias] = df._builder._builder
 
+    # 3. When connected to a standalone runtime, ship the raw SQL text plus
+    #    the serialized binding plans. All parsing and planning happens on the
+    #    server; SQL executes on the pure-Rust engine (no Python UDFs yet).
+    from daft.runners import get_or_create_runner
+    from daft.runtime.runner import RemoteRunner
+
+    runner = get_or_create_runner()
+    if isinstance(runner, RemoteRunner):
+        from daft.plan_transport import encode_partition_sets
+        from daft.runners.runner import LOCAL_PARTITION_SET_CACHE
+
+        bindings_bytes: dict[str, bytes] = {}
+        for alias, builder in py_ctes.items():
+            bindings_bytes[alias] = builder.to_bytes()
+        partition_sets = encode_partition_sets(
+            LOCAL_PARTITION_SET_CACHE.get_all_partition_sets()
+        )
+        parts = runner.client.submit_sql(
+            sql,
+            bindings_bytes,
+            partition_sets=partition_sets,
+        ).result()
+        if not parts:
+            return DataFrame._from_pydict({})
+        return DataFrame._from_micropartitions(*parts)
+
+    # 4. Local mode: parse and execute through the embedded Rust engine.
     py_sess = daft.current_session()._session
     py_config = get_context().daft_planning_config
     py_object = _sql_exec(sql, py_sess, py_ctes, py_config)

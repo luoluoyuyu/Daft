@@ -152,6 +152,33 @@ def test_rust_runtime_native_path_does_not_need_python(rust_runtime) -> None:
     }
 
 
+def test_rust_runtime_sql_execution(rust_runtime) -> None:
+    """SQL is parsed and planned on the server; the client only ships the text."""
+    endpoint, token = rust_runtime
+    from daft.runners import set_runner_remote
+
+    set_runner_remote(endpoint, token=token)
+
+    df = daft.from_pydict({"id": [1, 2, 3], "name": ["a", "b", "c"]})
+    result = daft.sql("SELECT id, name FROM df WHERE id > 1", df=df).to_pydict()
+    assert result == {"id": [2, 3], "name": ["b", "c"]}
+
+    # Joins between bound DataFrames work too: the SQL planner resolves both
+    # table names server-side.
+    left = daft.from_pydict({"id": [1, 2, 3], "name": ["a", "b", "c"]})
+    right = daft.from_pydict({"id": [1, 2, 3], "score": [0.5, 0.6, 0.7]})
+    joined = daft.sql(
+        "SELECT left.id, left.name, right.score FROM left JOIN right ON left.id = right.id",
+        left=left,
+        right=right,
+    ).to_pydict()
+    assert joined == {
+        "id": [1, 2, 3],
+        "name": ["a", "b", "c"],
+        "score": [0.5, 0.6, 0.7],
+    }
+
+
 def test_rust_runtime_udf_goes_through_python_worker(rust_runtime) -> None:
     endpoint, token = rust_runtime
     client = RuntimeClient(endpoint, token=token)
