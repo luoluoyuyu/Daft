@@ -6,7 +6,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
-from daft import Schema, context, from_pydict
+from daft import Schema, context
 from daft.api_annotations import PublicAPI
 from daft.daft import ScanOperatorHandle, StorageConfig
 from daft.dataframe import DataFrame
@@ -121,21 +121,6 @@ def read_sql(
     builder = LogicalPlanBuilder.from_tabular_scan(scan_operator=handle)
 
     return DataFrame(builder)
-
-
-@PublicAPI
-def sql(sql: str) -> DataFrame:
-    """Create a DataFrame from an SQL query.
-
-    EXPERIMENTAL: This features is early in development and will change.
-
-    Args:
-        sql (str): SQL query to execute
-
-    Returns:
-        DataFrame: Dataframe containing the results of the query
-    """
-    return from_pydict({})
 
 
 @dataclass

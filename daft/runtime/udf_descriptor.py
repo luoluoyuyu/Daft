@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import hashlib
 import platform
-from typing import Callable, Iterable
+from typing import Iterable
 
 from daft.runtime.daft_proto.daft_runtime_proto.v1 import (
     plan_pb2,

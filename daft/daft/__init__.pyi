@@ -1,6 +1,6 @@
 import builtins
 import datetime
-from collections.abc import AsyncIterator, Callable
+from collections.abc import Callable
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Concatenate, Literal, TypeVar
 
