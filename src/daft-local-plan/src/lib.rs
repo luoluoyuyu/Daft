@@ -4,7 +4,7 @@ mod plan;
 #[cfg(feature = "python")]
 pub mod python;
 mod results;
-mod translate;
+pub mod translate;
 use daft_micropartition::MicroPartitionRef;
 use daft_scan::ScanTaskRef;
 #[cfg(feature = "python")]
@@ -22,6 +22,7 @@ pub use plan::{
 pub use python::{PyLocalPhysicalPlan, PyShuffleWriteInfo, register_modules};
 pub use results::ExecutionStats;
 use serde::{Deserialize, Serialize};
+pub use translate::translate_distributed;
 pub use translate::translate;
 
 pub type InputId = u32;

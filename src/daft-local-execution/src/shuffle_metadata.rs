@@ -2,12 +2,12 @@
 use pyo3::{IntoPyObjectExt, Py, PyAny, PyResult, Python};
 
 #[derive(Debug)]
-pub(crate) struct ShuffleMetadata {
+pub struct ShuffleMetadata {
     pub partitions: Vec<ShufflePartitionMetadata>,
 }
 
 #[derive(Debug)]
-pub(crate) struct ShufflePartitionMetadata {
+pub struct ShufflePartitionMetadata {
     #[cfg(feature = "python")]
     pub object_ref: Option<Py<PyAny>>,
     pub num_rows: usize,

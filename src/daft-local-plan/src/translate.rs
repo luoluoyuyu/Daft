@@ -11,25 +11,50 @@ use daft_dsl::{
     resolved_col, window_to_agg_exprs,
 };
 use daft_functions::random::random_int_expr;
-use daft_logical_plan::{JoinType, LogicalPlan, LogicalPlanRef, SourceInfo, stats::StatsState};
+use daft_logical_plan::{
+    JoinType, LogicalPlan, LogicalPlanRef, SourceInfo,
+    partitioning::RepartitionSpec, stats::StatsState,
+};
 use daft_micropartition::MicroPartitionRef;
 use daft_scan::{ScanState, ScanTaskRef};
 
 use super::plan::{LocalNodeContext, LocalPhysicalPlan, LocalPhysicalPlanRef, SamplingMethod};
-use crate::{Input, SourceId, SourceIdCounter};
+use crate::{
+    FlightShuffleReadInput, Input, RepartitionWriteBackend, ShuffleReadBackend, SourceId,
+    SourceIdCounter,
+};
 
 pub fn translate(
     plan: &LogicalPlanRef,
     psets: &HashMap<String, Vec<MicroPartitionRef>>,
 ) -> DaftResult<(LocalPhysicalPlanRef, HashMap<SourceId, Input>)> {
+    translate_distributed(plan, psets, &HashMap::new())
+}
+
+/// Lower a logical plan to a local physical plan, resolving any `ShuffleRead`
+/// leaves against the provided Flight shuffle locations.
+///
+/// `shuffle_locations` maps a shuffle id to the set of Flight servers that
+/// wrote it (server address -> registered cache ids). The distributed
+/// scheduler assembles this map from intermediate-stage task reports before
+/// handing a downstream task to an executor. The plain [`translate`] entry
+/// point passes an empty map, so any `ShuffleRead` node it encounters would
+/// fail at execution time; callers that expect shuffle nodes must use this
+/// distributed variant.
+pub fn translate_distributed(
+    plan: &LogicalPlanRef,
+    psets: &HashMap<String, Vec<MicroPartitionRef>>,
+    shuffle_locations: &HashMap<u64, HashMap<String, Vec<u32>>>,
+) -> DaftResult<(LocalPhysicalPlanRef, HashMap<SourceId, Input>)> {
     let mut source_counter = SourceIdCounter::default();
-    translate_helper(plan, &mut source_counter, psets)
+    translate_helper(plan, &mut source_counter, psets, shuffle_locations)
 }
 
 fn translate_helper(
     plan: &LogicalPlanRef,
     source_counter: &mut SourceIdCounter,
     psets: &HashMap<String, Vec<MicroPartitionRef>>,
+    shuffle_locations: &HashMap<u64, HashMap<String, Vec<u32>>>,
 ) -> DaftResult<(LocalPhysicalPlanRef, HashMap<SourceId, Input>)> {
     match plan.as_ref() {
         LogicalPlan::Source(source) => {
@@ -100,7 +125,7 @@ fn translate_helper(
             "Sharding should have been folded into a source".to_string(),
         )),
         LogicalPlan::Filter(filter) => {
-            let (input_plan, inputs) = translate_helper(&filter.input, source_counter, psets)?;
+            let (input_plan, inputs) = translate_helper(&filter.input, source_counter, psets, shuffle_locations)?;
             let predicate = BoundExpr::try_new(filter.predicate.clone(), input_plan.schema())?;
             Ok((
                 LocalPhysicalPlan::filter(
@@ -114,7 +139,7 @@ fn translate_helper(
         }
         LogicalPlan::IntoBatches(into_batches) => {
             let (input_plan, inputs) =
-                translate_helper(&into_batches.input, source_counter, psets)?;
+                translate_helper(&into_batches.input, source_counter, psets, shuffle_locations)?;
             Ok((
                 LocalPhysicalPlan::into_batches(
                     input_plan,
@@ -127,7 +152,7 @@ fn translate_helper(
             ))
         }
         LogicalPlan::Limit(limit) => {
-            let (input_plan, inputs) = translate_helper(&limit.input, source_counter, psets)?;
+            let (input_plan, inputs) = translate_helper(&limit.input, source_counter, psets, shuffle_locations)?;
             Ok((
                 LocalPhysicalPlan::limit(
                     input_plan,
@@ -140,7 +165,7 @@ fn translate_helper(
             ))
         }
         LogicalPlan::Project(project) => {
-            let (input_plan, inputs) = translate_helper(&project.input, source_counter, psets)?;
+            let (input_plan, inputs) = translate_helper(&project.input, source_counter, psets, shuffle_locations)?;
 
             let projection = BoundExpr::bind_all(&project.projection, input_plan.schema())?;
 
@@ -156,7 +181,7 @@ fn translate_helper(
             ))
         }
         LogicalPlan::UDFProject(udf_project) => {
-            let (input_plan, inputs) = translate_helper(&udf_project.input, source_counter, psets)?;
+            let (input_plan, inputs) = translate_helper(&udf_project.input, source_counter, psets, shuffle_locations)?;
 
             let passthrough_columns =
                 BoundExpr::bind_all(&udf_project.passthrough_columns, input_plan.schema())?;
@@ -176,7 +201,7 @@ fn translate_helper(
             ))
         }
         LogicalPlan::Sample(sample) => {
-            let (input_plan, inputs) = translate_helper(&sample.input, source_counter, psets)?;
+            let (input_plan, inputs) = translate_helper(&sample.input, source_counter, psets, shuffle_locations)?;
             let sampling_method = if let Some(fraction) = sample.fraction {
                 SamplingMethod::Fraction(fraction)
             } else if let Some(size) = sample.size {
@@ -199,7 +224,7 @@ fn translate_helper(
             ))
         }
         LogicalPlan::Aggregate(aggregate) => {
-            let (input_plan, inputs) = translate_helper(&aggregate.input, source_counter, psets)?;
+            let (input_plan, inputs) = translate_helper(&aggregate.input, source_counter, psets, shuffle_locations)?;
 
             let aggregations = aggregate
                 .aggregations
@@ -238,7 +263,7 @@ fn translate_helper(
             }
         }
         LogicalPlan::Window(window) => {
-            let (input_plan, inputs) = translate_helper(&window.input, source_counter, psets)?;
+            let (input_plan, inputs) = translate_helper(&window.input, source_counter, psets, shuffle_locations)?;
 
             let window_functions =
                 BoundWindowExpr::bind_all(&window.window_functions, input_plan.schema())?;
@@ -319,7 +344,7 @@ fn translate_helper(
             Ok((plan, inputs))
         }
         LogicalPlan::Unpivot(unpivot) => {
-            let (input_plan, inputs) = translate_helper(&unpivot.input, source_counter, psets)?;
+            let (input_plan, inputs) = translate_helper(&unpivot.input, source_counter, psets, shuffle_locations)?;
 
             let ids = BoundExpr::bind_all(&unpivot.ids, input_plan.schema())?;
             let values = BoundExpr::bind_all(&unpivot.values, input_plan.schema())?;
@@ -339,7 +364,7 @@ fn translate_helper(
             ))
         }
         LogicalPlan::Pivot(pivot) => {
-            let (input_plan, inputs) = translate_helper(&pivot.input, source_counter, psets)?;
+            let (input_plan, inputs) = translate_helper(&pivot.input, source_counter, psets, shuffle_locations)?;
 
             let group_by = BoundExpr::bind_all(&pivot.group_by, input_plan.schema())?;
             let pivot_column = BoundExpr::try_new(pivot.pivot_column.clone(), input_plan.schema())?;
@@ -364,7 +389,7 @@ fn translate_helper(
             ))
         }
         LogicalPlan::Sort(sort) => {
-            let (input_plan, inputs) = translate_helper(&sort.input, source_counter, psets)?;
+            let (input_plan, inputs) = translate_helper(&sort.input, source_counter, psets, shuffle_locations)?;
 
             let sort_by = BoundExpr::bind_all(&sort.sort_by, input_plan.schema())?;
 
@@ -381,7 +406,7 @@ fn translate_helper(
             ))
         }
         LogicalPlan::Shuffle(shuffle) => {
-            let (input_plan, inputs) = translate_helper(&shuffle.input, source_counter, psets)?;
+            let (input_plan, inputs) = translate_helper(&shuffle.input, source_counter, psets, shuffle_locations)?;
             let sort_by = BoundExpr::bind_all(
                 &[random_int_expr(i64::MIN, i64::MAX, shuffle.seed)],
                 input_plan.schema(),
@@ -399,7 +424,7 @@ fn translate_helper(
             ))
         }
         LogicalPlan::TopN(top_n) => {
-            let (input_plan, inputs) = translate_helper(&top_n.input, source_counter, psets)?;
+            let (input_plan, inputs) = translate_helper(&top_n.input, source_counter, psets, shuffle_locations)?;
 
             let sort_by = BoundExpr::bind_all(&top_n.sort_by, input_plan.schema())?;
 
@@ -438,8 +463,8 @@ fn translate_helper(
                     _ => {}
                 }
             }
-            let (left_plan, mut left_inputs) = translate_helper(&join.left, source_counter, psets)?;
-            let (right_plan, right_inputs) = translate_helper(&join.right, source_counter, psets)?;
+            let (left_plan, mut left_inputs) = translate_helper(&join.left, source_counter, psets, shuffle_locations)?;
+            let (right_plan, right_inputs) = translate_helper(&join.right, source_counter, psets, shuffle_locations)?;
 
             // Merge inputs from both sides
             left_inputs.extend(right_inputs);
@@ -487,7 +512,7 @@ fn translate_helper(
         }
         LogicalPlan::Distinct(distinct) => {
             let schema = distinct.input.schema();
-            let (input_plan, inputs) = translate_helper(&distinct.input, source_counter, psets)?;
+            let (input_plan, inputs) = translate_helper(&distinct.input, source_counter, psets, shuffle_locations)?;
 
             let columns = distinct
                 .columns
@@ -507,9 +532,9 @@ fn translate_helper(
             ))
         }
         LogicalPlan::Concat(concat) => {
-            let (input_plan, mut inputs) = translate_helper(&concat.input, source_counter, psets)?;
+            let (input_plan, mut inputs) = translate_helper(&concat.input, source_counter, psets, shuffle_locations)?;
             let (other_plan, other_inputs) =
-                translate_helper(&concat.other, source_counter, psets)?;
+                translate_helper(&concat.other, source_counter, psets, shuffle_locations)?;
 
             // Merge inputs from both sides
             inputs.extend(other_inputs);
@@ -528,17 +553,72 @@ fn translate_helper(
             log::warn!(
                 "Repartition not supported on the NativeRunner. This will be a no-op. Please use the Ray Runner instead if you need to repartition"
             );
-            translate_helper(&repartition.input, source_counter, psets)
+            translate_helper(&repartition.input, source_counter, psets, shuffle_locations)
         }
         LogicalPlan::IntoPartitions(into_partitions) => {
             log::warn!(
                 "IntoPartitions not supported on the NativeRunner. This will be a no-op. Please use the Ray Runner instead if you need to repartition"
             );
-            translate_helper(&into_partitions.input, source_counter, psets)
+            translate_helper(&into_partitions.input, source_counter, psets, shuffle_locations)
+        }
+        LogicalPlan::ShuffleRead(shuffle_read) => {
+            let source_id = source_counter.next();
+            let mut inputs = HashMap::new();
+            inputs.insert(
+                source_id,
+                Input::FlightShuffle(vec![FlightShuffleReadInput {
+                    partition_idx: shuffle_read.partition_idx,
+                }]),
+            );
+            let server_cache_mapping = shuffle_locations
+                .get(&shuffle_read.shuffle_id)
+                .cloned()
+                .unwrap_or_default();
+            Ok((
+                LocalPhysicalPlan::shuffle_read(
+                    source_id,
+                    shuffle_read.output_schema.clone(),
+                    ShuffleReadBackend::Flight {
+                        shuffle_id: shuffle_read.shuffle_id,
+                        server_cache_mapping,
+                    },
+                    shuffle_read.stats_state.clone(),
+                    LocalNodeContext::default(),
+                ),
+                inputs,
+            ))
+        }
+        LogicalPlan::ShuffleWrite(shuffle_write) => {
+            let (input_plan, inputs) =
+                translate_helper(&shuffle_write.input, source_counter, psets, shuffle_locations)?;
+            let repartition_spec = shuffle_write
+                .repartition_spec
+                .clone()
+                .unwrap_or_else(|| {
+                    RepartitionSpec::Random(daft_logical_plan::partitioning::RandomShuffleConfig::new(
+                        Some(shuffle_write.num_partitions),
+                    ))
+                });
+            Ok((
+                LocalPhysicalPlan::repartition_write(
+                    input_plan,
+                    shuffle_write.num_partitions,
+                    shuffle_write.output_schema.clone(),
+                    RepartitionWriteBackend::Flight {
+                        shuffle_id: shuffle_write.shuffle_id,
+                        shuffle_dirs: shuffle_write.shuffle_dirs.clone(),
+                        compression: shuffle_write.compression.clone(),
+                    },
+                    repartition_spec,
+                    shuffle_write.stats_state.clone(),
+                    LocalNodeContext::default(),
+                ),
+                inputs,
+            ))
         }
         LogicalPlan::MonotonicallyIncreasingId(monotonically_increasing_id) => {
             let (input_plan, inputs) =
-                translate_helper(&monotonically_increasing_id.input, source_counter, psets)?;
+                translate_helper(&monotonically_increasing_id.input, source_counter, psets, shuffle_locations)?;
             Ok((
                 LocalPhysicalPlan::monotonically_increasing_id(
                     input_plan,
@@ -553,7 +633,7 @@ fn translate_helper(
         }
         LogicalPlan::Sink(sink) => {
             use daft_logical_plan::SinkInfo;
-            let (input_plan, inputs) = translate_helper(&sink.input, source_counter, psets)?;
+            let (input_plan, inputs) = translate_helper(&sink.input, source_counter, psets, shuffle_locations)?;
             let data_schema = input_plan.schema().clone();
             let plan = match sink.sink_info.as_ref() {
                 SinkInfo::OutputFileInfo(info) => {
@@ -610,7 +690,7 @@ fn translate_helper(
             Ok((plan, inputs))
         }
         LogicalPlan::Explode(explode) => {
-            let (input_plan, inputs) = translate_helper(&explode.input, source_counter, psets)?;
+            let (input_plan, inputs) = translate_helper(&explode.input, source_counter, psets, shuffle_locations)?;
 
             let to_explode = BoundExpr::bind_all(&explode.to_explode, input_plan.schema())?;
 
@@ -629,7 +709,7 @@ fn translate_helper(
         }
         LogicalPlan::VLLMProject(vllm_project) => {
             let (input_plan, inputs) =
-                translate_helper(&vllm_project.input, source_counter, psets)?;
+                translate_helper(&vllm_project.input, source_counter, psets, shuffle_locations)?;
             let expr = BoundVLLMExpr::try_new(vllm_project.expr.clone(), input_plan.schema())?;
             Ok((
                 LocalPhysicalPlan::vllm_project(

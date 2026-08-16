@@ -165,6 +165,38 @@ pub fn plan_to_proto(plan: &LogicalPlan) -> DaftResult<proto::LogicalPlan> {
                 stats: Some(stats_state_to_proto(&into_partitions.stats_state)),
             }))
         }
+        LogicalPlan::ShuffleRead(shuffle_read) => {
+            let (plan_id, node_id) =
+                node_ids_to_proto(&shuffle_read.plan_id, &shuffle_read.node_id);
+            Node::ShuffleRead(proto::ShuffleReadNode {
+                plan_id,
+                node_id,
+                output_schema: Some(shuffle_read.output_schema.to_proto()?),
+                shuffle_id: shuffle_read.shuffle_id,
+                partition_idx: shuffle_read.partition_idx as u64,
+                stats: Some(stats_state_to_proto(&shuffle_read.stats_state)),
+            })
+        }
+        LogicalPlan::ShuffleWrite(shuffle_write) => {
+            let (plan_id, node_id) =
+                node_ids_to_proto(&shuffle_write.plan_id, &shuffle_write.node_id);
+            Node::ShuffleWrite(Box::new(proto::ShuffleWriteNode {
+                plan_id,
+                node_id,
+                input: Some(Box::new(plan_to_proto(&shuffle_write.input)?)),
+                shuffle_id: shuffle_write.shuffle_id,
+                num_partitions: shuffle_write.num_partitions as u64,
+                spec: shuffle_write
+                    .repartition_spec
+                    .as_ref()
+                    .map(repartition_spec_to_proto)
+                    .transpose()?,
+                output_schema: Some(shuffle_write.output_schema.to_proto()?),
+                shuffle_dirs: shuffle_write.shuffle_dirs.clone(),
+                compression: shuffle_write.compression.clone(),
+                stats: Some(stats_state_to_proto(&shuffle_write.stats_state)),
+            }))
+        }
         LogicalPlan::Distinct(distinct) => {
             let (plan_id, node_id) = node_ids_to_proto(&distinct.plan_id, &distinct.node_id);
             Node::Distinct(Box::new(proto::DistinctNode {
@@ -618,6 +650,52 @@ pub fn plan_from_proto(plan: proto::LogicalPlan) -> DaftResult<Arc<LogicalPlan>>
                 stats_state: stats_state_from_proto(required_or_default(
                     into_partitions.stats,
                     "IntoPartitionsNode.stats",
+                )),
+            })
+        }
+        Node::ShuffleRead(shuffle_read) => {
+            let (plan_id, node_id) =
+                node_ids_from_proto(shuffle_read.plan_id, shuffle_read.node_id);
+            LogicalPlan::ShuffleRead(ShuffleRead {
+                plan_id,
+                node_id,
+                output_schema: schema_from_proto_required(
+                    shuffle_read.output_schema,
+                    "ShuffleReadNode.output_schema",
+                )?,
+                shuffle_id: shuffle_read.shuffle_id,
+                partition_idx: shuffle_read.partition_idx as usize,
+                stats_state: stats_state_from_proto(required_or_default(
+                    shuffle_read.stats,
+                    "ShuffleReadNode.stats",
+                )),
+            })
+        }
+        Node::ShuffleWrite(shuffle_write) => {
+            let (plan_id, node_id) =
+                node_ids_from_proto(shuffle_write.plan_id, shuffle_write.node_id);
+            LogicalPlan::ShuffleWrite(ShuffleWrite {
+                plan_id,
+                node_id,
+                input: plan_from_proto(required_boxed_plan(
+                    shuffle_write.input,
+                    "ShuffleWriteNode.input",
+                )?)?,
+                shuffle_id: shuffle_write.shuffle_id,
+                num_partitions: shuffle_write.num_partitions as usize,
+                repartition_spec: shuffle_write
+                    .spec
+                    .map(repartition_spec_from_proto)
+                    .transpose()?,
+                output_schema: schema_from_proto_required(
+                    shuffle_write.output_schema,
+                    "ShuffleWriteNode.output_schema",
+                )?,
+                shuffle_dirs: shuffle_write.shuffle_dirs,
+                compression: shuffle_write.compression,
+                stats_state: stats_state_from_proto(required_or_default(
+                    shuffle_write.stats,
+                    "ShuffleWriteNode.stats",
                 )),
             })
         }

@@ -66,6 +66,8 @@ message LogicalPlan {
     WindowNode window = 26;
     TopNNode top_n = 27;
     VllmProjectNode vllm_project = 28;
+    ShuffleReadNode shuffle_read = 29;
+    ShuffleWriteNode shuffle_write = 30;
   }
 }
 
@@ -335,6 +337,51 @@ message VllmProjectNode {
   string output_column_name = 5;
   Schema output_schema = 6;
   StatsState stats = 7;
+}
+
+// Distributed execution boundary nodes. These never appear in client-built
+// plans: the scheduler's stage splitter introduces them when it cuts a plan
+// at Repartition/IntoPartitions boundaries. The executor understands them
+// and lowers them to the Flight shuffle read/write operators.
+//
+// A stage plan is one of:
+//   * intermediate:  ShuffleWriteNode(input)  -- execute input, write shuffle
+//   * downstream:    operators over ShuffleReadNode leaves -- read one
+//                    partition of each upstream shuffle and continue
+//   * final:         plain plan over ShuffleReadNode leaves -- return DAFTRES1
+message ShuffleReadNode {
+  optional uint64 plan_id = 1;
+  optional uint64 node_id = 2;
+  Schema output_schema = 3;
+  // Shuffle id written by the upstream stage (see ShuffleWriteNode).
+  uint64 shuffle_id = 4;
+  // Partition of the shuffle this task reads. Filled by the scheduler when
+  // the task is built; 0 in the stage-DAG placeholder.
+  uint64 partition_idx = 5;
+  StatsState stats = 6;
+}
+
+message ShuffleWriteNode {
+  optional uint64 plan_id = 1;
+  optional uint64 node_id = 2;
+  LogicalPlan input = 3;
+  // Shuffle id this stage writes. Downstream ShuffleReadNode leaves reference
+  // the same id.
+  uint64 shuffle_id = 4;
+  // Number of partitions the shuffle is split into (target partition count).
+  uint64 num_partitions = 5;
+  RepartitionSpec spec = 6;
+  Schema output_schema = 7;
+  // Executor-local spill directories and compression for the shuffle cache
+  // (filled by the scheduler from its execution config).
+  repeated string shuffle_dirs = 8;
+  optional string compression = 9;
+  StatsState stats = 10;
+}
+
+// Cache ids of one shuffle's partition files on one Flight server.
+message PartitionCache {
+  repeated uint32 cache_ids = 1;
 }
 
 // ---------------------------------------------------------------------------

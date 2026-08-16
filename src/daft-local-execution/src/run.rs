@@ -112,10 +112,6 @@ impl MessageRouter {
     /// Route a message to the appropriate channel based on its input_id.
     fn route_message(&mut self, msg: PipelineMessage) {
         match msg {
-            PipelineMessage::Flush(input_id) => {
-                self.input_start_times.remove(&input_id);
-                self.output_senders.remove(&input_id);
-            }
             PipelineMessage::Morsel {
                 input_id,
                 partition,
@@ -125,9 +121,21 @@ impl MessageRouter {
                 }
             }
             PipelineMessage::ShuffleMetadata { input_id, metadata } => {
+                eprintln!(
+                    "[router] shuffle metadata for input {input_id}, senders: {:?}",
+                    self.output_senders.keys().collect::<Vec<_>>()
+                );
                 if let Some(sender) = self.output_senders.get(&input_id) {
                     let _ = sender.send(ExecutionEngineResultItem::ShuffleMetadata(metadata));
                 }
+            }
+            PipelineMessage::Flush(input_id) => {
+                eprintln!(
+                    "[router] flush for input {input_id}, senders: {:?}",
+                    self.output_senders.keys().collect::<Vec<_>>()
+                );
+                self.input_start_times.remove(&input_id);
+                self.output_senders.remove(&input_id);
             }
         }
     }
@@ -406,6 +414,15 @@ impl NativeExecutor {
             .map(|conn| conn.shuffle_address())
     }
 
+    /// Access the executor-local Flight shuffle server.
+    ///
+    /// The distributed executor uses this to report the cache ids registered
+    /// for an intermediate shuffle stage back to the scheduler (see
+    /// `ShuffleFlightServer::cache_ids`).
+    pub fn shuffle_server(&self) -> Option<Arc<ShuffleFlightServer>> {
+        self.shuffle_server.clone()
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn run(
         &mut self,
@@ -583,8 +600,15 @@ impl NativeExecutor {
 impl Drop for NativeExecutor {
     fn drop(&mut self) {
         self.cancel.cancel();
-        if let Some(conn) = &mut self.shuffle_server_connection {
-            let _ = conn.shutdown();
+        if let Some(conn) = self.shuffle_server_connection.take() {
+            // `shutdown` blocks the current thread on the global IO runtime,
+            // which panics when called from inside a tokio runtime context
+            // (e.g. dropping the executor on an async task). Shut the Flight
+            // server down from a dedicated thread instead.
+            std::thread::spawn(move || {
+                let mut conn = conn;
+                let _ = conn.shutdown();
+            });
         }
     }
 }

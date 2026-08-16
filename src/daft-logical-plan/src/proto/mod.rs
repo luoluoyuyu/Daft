@@ -110,7 +110,7 @@ pub(crate) use indexmap::IndexMap;
 pub(crate) use crate::{
     ops::{
         Aggregate, Concat, Distinct, Explode, Filter, IntoBatches, IntoPartitions, Limit, Offset,
-        Project, Pivot, Repartition, Shard, Sort, UDFProject, Unpivot,
+        Project, Pivot, Repartition, Shard, ShuffleRead, ShuffleWrite, Sort, UDFProject, Unpivot,
     },
     partitioning::{
         ClusteringSpec, ClusteringSpecRef, HashClusteringConfig, HashRepartitionConfig,

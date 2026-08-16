@@ -10,11 +10,13 @@ fn main() {
         "proto/daft/v1/runtime.proto",
         "proto/daft/v1/udf.proto",
         "proto/daft/v1/worker.proto",
+        "proto/daft/v1/distributed.proto",
     ];
     println!("cargo:rerun-if-changed=proto/daft/v1/plan.proto");
     println!("cargo:rerun-if-changed=proto/daft/v1/runtime.proto");
     println!("cargo:rerun-if-changed=proto/daft/v1/udf.proto");
     println!("cargo:rerun-if-changed=proto/daft/v1/worker.proto");
+    println!("cargo:rerun-if-changed=proto/daft/v1/distributed.proto");
 
     prost_build::Config::new()
         .compile_protos(&protos, &["proto"])

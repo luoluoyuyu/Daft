@@ -345,6 +345,14 @@ impl ShuffleCache {
         Ok(())
     }
 
+    /// Best-effort removal of every on-disk partition file owned by this
+    /// cache. Used when the scheduler purges a completed job's shuffle.
+    pub fn cleanup_files(&self) {
+        for partition_idx in 0..self.file_paths_per_partition.len() {
+            let _ = self.clear_partition(partition_idx);
+        }
+    }
+
     pub fn clear_directories(&self) -> DaftResult<()> {
         for dir in &self.shuffle_dirs {
             std::fs::remove_dir_all(dir)?;

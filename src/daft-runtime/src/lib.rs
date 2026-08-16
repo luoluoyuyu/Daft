@@ -1,14 +1,18 @@
-//! Standalone Daft runtime server (single-machine, no distributed workers).
+//! Daft runtime: distributed scheduler + HTTP control plane.
 //!
 //! The binary serves the HTTP control plane from Rust. Every endpoint speaks
 //! the protobuf wire protocol defined in the ``daft-protocol`` crate
-//! (``application/x-protobuf``); JSON is never used on the wire. Plans that do
-//! **not** contain Python UDFs are deserialized and executed entirely by the
-//! pure-Rust execution engine (``daft-local-execution``); plans that *do*
-//! contain Python UDFs are handed to a short-lived Python worker subprocess
-//! (see ``python_worker``) which owns the interpreter needed to
-//! unpickle/run cloudpickled UDFs. Results are always returned as an Arrow IPC
-//! envelope to the Python client.
+//! (``application/x-protobuf``); JSON is never used on the wire.
+//!
+//! Jobs (direct logical plans or SQL statements planned server-side) are
+//! split by the scheduler ([`scheduler`]) into a DAG of stages at the
+//! `Repartition`/`IntoPartitions` boundaries of the optimized logical plan,
+//! then into one task per stage x partition slice. Executors
+//! ([`executor`]) register over HTTP, poll for tasks, execute intermediate
+//! stages with the pure-Rust engine (writing shuffle partitions over Arrow
+//! Flight) and final stages natively or via a short-lived Python worker
+//! subprocess when the job contains UDFs. Results are returned as an Arrow
+//! IPC envelope to the Python client.
 
 #![allow(clippy::too_many_arguments)]
 
@@ -30,8 +34,11 @@ use axum::{
 };
 use daft_protocol::{
     daft::v1::{
-        Error as ProtoError, JobState as ProtoJobState, JobStatus, JobSubmitRequest,
-        JobSubmitResponse, JobResult, SqlSubmitRequest, UdfArtifact, UdfArtifactMetadata,
+        poll_work_response, Error as ProtoError, ExecutorHeartbeat,
+        ExecutorHeartbeatResponse, ExecutorRegistration, ExecutorRegistrationResponse,
+        ExecutorTaskStatusResponse, DistributedJobStatus, JobState as ProtoJobState, JobStatus,
+        JobSubmitRequest, JobSubmitResponse, JobResult, PollWorkRequest, PollWorkResponse,
+        PurgeShuffle, SqlSubmitRequest, TaskStatus, UdfArtifact, UdfArtifactMetadata, UdfDescriptor,
         UploadUdfArtifactRequest, UploadUdfArtifactResponse, WorkerInfo, WorkerList,
     },
     encode,
@@ -41,8 +48,10 @@ use sha2::{Digest, Sha256};
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
+pub mod executor;
 mod native;
 mod python_worker;
+mod scheduler;
 mod sql;
 
 const PROTOBUF_CONTENT_TYPE: &str = "application/x-protobuf";
@@ -93,11 +102,26 @@ impl JobRecord {
     }
 }
 
+/// Scheduler-side view of one registered executor.
+#[derive(Clone, Debug)]
+struct ExecutorInfo {
+    registration: ExecutorRegistration,
+    last_heartbeat_ms: u64,
+}
+
 #[derive(Default, Clone)]
 pub struct RuntimeState {
     jobs: Arc<Mutex<HashMap<Uuid, JobRecord>>>,
     workers: Arc<RwLock<HashMap<String, WorkerInfo>>>,
     udf_artifacts: Arc<RwLock<HashMap<String, StoredUdfArtifact>>>,
+    executors: Arc<Mutex<HashMap<String, ExecutorInfo>>>,
+    distributed_jobs: Arc<Mutex<HashMap<Uuid, scheduler::DistributedJob>>>,
+    /// Shuffle-cache purge instructions queued for executors, keyed by the
+    /// executor's Flight address. Filled when a job reaches a terminal state
+    /// (its intermediate shuffle caches are dead weight after that) and
+    /// drained by [`RuntimeState::poll_work`], which piggybacks them onto the
+    /// next poll response for the owning executor.
+    pending_purges: Arc<Mutex<HashMap<String, Vec<PurgeShuffle>>>>,
     token: Option<String>,
 }
 
@@ -111,6 +135,13 @@ impl RuntimeState {
 }
 
 impl RuntimeState {
+    /// Submit a pre-built logical plan for distributed execution.
+    ///
+    /// The plan bytes (``daft.v1.LogicalPlan``), in-memory partition sets,
+    /// parsed UDF descriptors, and UDF artifact files are snapshotted into a
+    /// distributed job. The scheduler thread builds the stage DAG and fills
+    /// the task queue; executors poll it from then on. No job is ever
+    /// executed on the scheduler process.
     pub async fn submit(&self, request: JobSubmitRequest) -> Result<JobSubmitResponse, String> {
         let plan_bytes = request.logical_plan;
         let artifact_files = self.snapshot_artifacts(&request.udf_artifact_ids).await?;
@@ -120,20 +151,17 @@ impl RuntimeState {
         let python_version = request.python_version;
         let partition_sets = request.partition_sets;
         let artifact_ids = request.udf_artifact_ids;
+        let artifact_files: HashMap<String, Vec<u8>> = artifact_files.into_iter().collect();
         std::thread::spawn(move || {
-            state.run_job(id, artifact_ids, artifact_files, move |extra_paths| {
-                if udfs.is_empty() {
-                    native::execute_plan_native(plan_bytes, partition_sets)
-                } else {
-                    python_worker::execute_plan_with_python_worker(
-                        plan_bytes,
-                        partition_sets,
-                        extra_paths,
-                        udfs,
-                        python_version,
-                    )
-                }
-            });
+            state.schedule_job(
+                id,
+                plan_bytes,
+                partition_sets,
+                udfs,
+                artifact_ids,
+                artifact_files,
+                python_version,
+            );
         });
         Ok(JobSubmitResponse {
             job_id: id.to_string(),
@@ -144,7 +172,9 @@ impl RuntimeState {
     ///
     /// The client ships the raw statement text plus the serialized logical
     /// plans of its DataFrame bindings; parsing happens entirely in Rust (see
-    /// [`crate::sql`]).
+    /// [`crate::sql`]). The produced plan follows the exact same distributed
+    /// scheduling path as a directly submitted plan. SQL does not support
+    /// Python UDFs yet, so the job carries no descriptors or artifacts.
     pub async fn submit_sql(
         &self,
         request: SqlSubmitRequest,
@@ -158,13 +188,108 @@ impl RuntimeState {
         let sql_text = request.sql;
         let bindings = request.bindings;
         std::thread::spawn(move || {
-            state.run_job(id, vec![], vec![], move |_extra_paths| {
-                crate::sql::execute_sql_job(&sql_text, bindings, partition_sets)
-            });
+            let plan_bytes = match crate::sql::plan_sql_job(&sql_text, bindings) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    state.fail_job(id, error);
+                    return;
+                }
+            };
+            state.schedule_job(
+                id,
+                plan_bytes,
+                partition_sets,
+                Vec::new(),
+                Vec::new(),
+                HashMap::new(),
+                String::new(),
+            );
         });
         Ok(JobSubmitResponse {
             job_id: id.to_string(),
         })
+    }
+
+    /// Build the stage DAG for a submitted job and insert it into the
+    /// scheduler state. Runs on a dedicated thread because plan optimization
+    /// can be slow. On failure the durable job record is marked Failed.
+    fn schedule_job(
+        &self,
+        id: Uuid,
+        plan_bytes: Vec<u8>,
+        partition_sets: HashMap<String, Vec<u8>>,
+        udfs: Vec<UdfDescriptor>,
+        artifact_ids: Vec<String>,
+        artifact_files: HashMap<String, Vec<u8>>,
+        python_version: String,
+    ) {
+        let result = scheduler::build_distributed_job(
+            id,
+            plan_bytes,
+            partition_sets,
+            udfs,
+            artifact_ids,
+            artifact_files,
+            python_version,
+        );
+        eprintln!("[scheduler] build_distributed_job for {id}: {}", if result.is_ok() { "ok" } else { "error" });
+        match result {
+            Ok(job) => {
+                eprintln!(
+                    "[scheduler] job {id} inserted with {} stages",
+                    job.num_stages()
+                );
+                let mut jobs = self.jobs.lock().unwrap();
+                if let Some(record) = jobs.get_mut(&id) {
+                    record.state = JobState::Running;
+                }
+                self.distributed_jobs.lock().unwrap().insert(id, job);
+            }
+            Err(error) => self.fail_job(id, error),
+        }
+    }
+
+    /// Mark a durable job record Failed. Used when planning or scheduling
+    /// fails before any task is dispatched.
+    fn fail_job(&self, id: Uuid, error: String) {
+        let mut jobs = self.jobs.lock().unwrap();
+        if let Some(record) = jobs.get_mut(&id) {
+            record.state = JobState::Failed;
+            record.error = Some(error);
+        }
+    }
+
+    /// Queue every shuffle cache this job wrote for purge on its holding
+    /// executor. Called when the job reaches a terminal state (success or
+    /// failure): the caches are no longer readable by any task, so keeping
+    /// them would make the executor's Flight server accumulate partition
+    /// files forever.
+    fn enqueue_purges(&self, id: Uuid) {
+        let purges = {
+            let jobs = self.distributed_jobs.lock().unwrap();
+            match jobs.get(&id) {
+                Some(job) => job.purge_requests(),
+                None => return,
+            }
+        };
+        if purges.is_empty() {
+            return;
+        }
+        let count = purges.len();
+        let mut pending = self.pending_purges.lock().unwrap();
+        for (shuffle_id, flight_address, cache_ids) in purges {
+            pending
+                .entry(flight_address)
+                .or_default()
+                .push(PurgeShuffle {
+                    shuffle_id,
+                    cache_ids,
+                });
+        }
+        eprintln!(
+            "[scheduler] enqueued {} purge requests for job {id}",
+            count
+        );
     }
 
     /// Snapshot the (filename, payload) pairs of the requested UDF artifacts
@@ -204,57 +329,183 @@ impl RuntimeState {
         id
     }
 
-    /// Run a submitted job to completion on a dedicated thread.
-    ///
-    /// ``execute`` receives the materialized UDF artifact directory paths
-    /// (empty when the job has no UDF artifacts) and runs the job body.
-    fn run_job(
+    /// Register an executor with the scheduler.
+    pub async fn register_executor(
         &self,
-        id: Uuid,
-        artifact_ids: Vec<String>,
-        artifact_files: Vec<(String, Vec<u8>)>,
-        execute: impl FnOnce(Vec<String>) -> Result<Vec<u8>, String>,
-    ) {
-        {
-            let mut jobs = self.jobs.lock().unwrap();
-            if let Some(record) = jobs.get_mut(&id) {
-                record.state = JobState::Running;
+        registration: ExecutorRegistration,
+    ) -> ExecutorRegistrationResponse {
+        if registration.worker_id.trim().is_empty() {
+            return ExecutorRegistrationResponse {
+                accepted: false,
+                message: "worker_id must not be empty".to_string(),
+            };
+        }
+        self.executors.lock().unwrap().insert(
+            registration.worker_id.clone(),
+            ExecutorInfo {
+                registration,
+                last_heartbeat_ms: now_ms(),
+            },
+        );
+        ExecutorRegistrationResponse {
+            accepted: true,
+            message: "registered".to_string(),
+        }
+    }
+
+    /// Update an executor's liveness timestamp.
+    pub async fn executor_heartbeat(
+        &self,
+        heartbeat: ExecutorHeartbeat,
+    ) -> ExecutorHeartbeatResponse {
+        let mut executors = self.executors.lock().unwrap();
+        match executors.get_mut(&heartbeat.worker_id) {
+            Some(info) => {
+                info.last_heartbeat_ms = heartbeat.timestamp_ms.max(now_ms());
+                ExecutorHeartbeatResponse { ok: true }
+            }
+            None => ExecutorHeartbeatResponse { ok: false },
+        }
+    }
+
+    /// Return one ready task for the requesting executor, or `no_work`.
+    ///
+    /// Stages become ready as their upstream shuffles complete; within a
+    /// stage, tasks are dispatched in partition order. Jobs are scanned
+    /// round-robin so a busy job cannot starve later ones.
+    pub async fn poll_work(
+        &self,
+        request: PollWorkRequest,
+    ) -> Result<PollWorkResponse, String> {
+        // Drain this executor's queued purge instructions and piggyback them
+        // onto its next response. Executors are identified by worker id on
+        // the wire, but purges are keyed by Flight address, so resolve the
+        // address from the registration first.
+        let purge_shuffles = {
+            let flight_address = self
+                .executors
+                .lock()
+                .unwrap()
+                .get(&request.worker_id)
+                .map(|info| info.registration.flight_address.clone());
+            match flight_address {
+                Some(address) => self
+                    .pending_purges
+                    .lock()
+                    .unwrap()
+                    .remove(&address)
+                    .unwrap_or_default(),
+                None => Vec::new(),
+            }
+        };
+        if !purge_shuffles.is_empty() {
+            eprintln!(
+                "[scheduler] handing {} purge requests to executor {}",
+                purge_shuffles.len(),
+                request.worker_id
+            );
+        }
+        let mut jobs = self.distributed_jobs.lock().unwrap();
+        for job in jobs.values_mut() {
+            if let Some(task) = job.poll(&request.worker_id) {
+                eprintln!(
+                    "[scheduler] poll: dispatched task {}/{} to {}",
+                    task.job_id, task.task_id, request.worker_id
+                );
+                return Ok(PollWorkResponse {
+                    work: Some(poll_work_response::Work::Task(task)),
+                    purge_shuffles,
+                });
             }
         }
-        let execution = (|| {
-            let artifact_dir = if artifact_ids.is_empty() {
-                None
-            } else {
-                Some(materialize_artifacts(id, &artifact_files)?)
-            };
-            let extra_paths = artifact_dir
-                .iter()
-                .map(|dir| dir.to_string_lossy().into_owned())
-                .collect();
-            let result = execute(extra_paths);
-            // Best-effort cleanup of the per-job artifact staging directory.
-            if let Some(dir) = artifact_dir {
-                let _ = std::fs::remove_dir_all(&dir);
-            }
-            result
-        })();
+        Ok(PollWorkResponse {
+            work: Some(poll_work_response::Work::NoWork(true)),
+            purge_shuffles,
+        })
+    }
 
-        let mut jobs = self.jobs.lock().unwrap();
-        let record = jobs.get_mut(&id).expect("job record exists while running");
-        match execution {
-            Ok(result) => {
+    /// Apply a task-status report to its distributed job and update the
+    /// durable job record when the job reaches a terminal state.
+    pub async fn report_task_status(
+        &self,
+        status: TaskStatus,
+    ) -> Result<ExecutorTaskStatusResponse, String> {
+        eprintln!(
+            "[scheduler] task-status: job={} stage={} task={} state={} flight={} caches={:?} result={} bytes",
+            status.job_id,
+            status.stage_id,
+            status.task_id,
+            status.state,
+            status.flight_address,
+            status.cache_ids,
+            status.result.len()
+        );
+        let job_id: Uuid = status
+            .job_id
+            .parse()
+            .map_err(|_| format!("invalid job id {}", status.job_id))?;
+        let outcome = {
+            let mut jobs = self.distributed_jobs.lock().unwrap();
+            let job = jobs
+                .get_mut(&job_id)
+                .ok_or_else(|| format!("unknown distributed job {job_id}"))?;
+            job.on_task_status(&status)
+        };
+        let mut records = self.jobs.lock().unwrap();
+        let record = records
+            .get_mut(&job_id)
+            .ok_or_else(|| format!("unknown job {job_id}"))?;
+        match outcome {
+            scheduler::JobOutcome::Succeeded(result) => {
                 record.state = JobState::Succeeded;
                 record.result = Some(result.into());
+                self.enqueue_purges(job_id);
+                self.distributed_jobs.lock().unwrap().remove(&job_id);
+                Ok(ExecutorTaskStatusResponse {
+                    accepted: true,
+                    message: "job succeeded".to_string(),
+                })
             }
-            Err(error) => {
+            scheduler::JobOutcome::Failed(error) => {
                 record.state = JobState::Failed;
                 record.error = Some(error);
+                self.enqueue_purges(job_id);
+                self.distributed_jobs.lock().unwrap().remove(&job_id);
+                Ok(ExecutorTaskStatusResponse {
+                    accepted: true,
+                    message: "job failed".to_string(),
+                })
             }
+            scheduler::JobOutcome::InProgress => Ok(ExecutorTaskStatusResponse {
+                accepted: true,
+                message: String::new(),
+            }),
         }
     }
 
     pub async fn status(&self, id: Uuid) -> Option<JobStatus> {
         self.jobs.lock().unwrap().get(&id).map(JobRecord::status)
+    }
+
+    /// Scheduler-side introspection of a running distributed job: its stage
+    /// count and how many tasks have completed so far.
+    pub async fn distributed_job_status(&self, id: Uuid) -> Option<DistributedJobStatus> {
+        let jobs = self.distributed_jobs.lock().unwrap();
+        let job = jobs.get(&id)?;
+        let state = match job.state {
+            scheduler::DistJobState::Pending => ProtoJobState::Pending,
+            scheduler::DistJobState::Running => ProtoJobState::Running,
+            scheduler::DistJobState::Succeeded => ProtoJobState::Succeeded,
+            scheduler::DistJobState::Failed => ProtoJobState::Failed,
+        };
+        Some(DistributedJobStatus {
+            job_id: id.to_string(),
+            state: state as i32,
+            error: job.error.clone().unwrap_or_default(),
+            num_stages: job.num_stages(),
+            completed_tasks: job.completed_tasks(),
+            num_tasks: job.num_tasks(),
+        })
     }
 
     pub async fn cancel(&self, id: Uuid) -> Option<JobStatus> {
@@ -448,6 +699,24 @@ async fn cancel(
         })
 }
 
+async fn distributed_job_status(
+    Path(id): Path<Uuid>,
+    State(state): State<RuntimeState>,
+) -> Response {
+    state
+        .distributed_job_status(id)
+        .await
+        .map(|status| proto_response(StatusCode::OK, &status))
+        .unwrap_or_else(|| {
+            proto_response(
+                StatusCode::NOT_FOUND,
+                &ProtoError {
+                    message: "unknown distributed job".to_string(),
+                },
+            )
+        })
+}
+
 async fn workers(State(state): State<RuntimeState>) -> Response {
     let workers = WorkerList {
         workers: state.workers().await,
@@ -517,6 +786,86 @@ async fn download_udf_artifact(
         })
 }
 
+async fn register_executor(
+    State(state): State<RuntimeState>,
+    body: Bytes,
+) -> Response {
+    let request = match ExecutorRegistration::decode(body) {
+        Ok(request) => request,
+        Err(e) => {
+            return proto_response(
+                StatusCode::BAD_REQUEST,
+                &ProtoError {
+                    message: format!("invalid protobuf request: {e}"),
+                },
+            );
+        }
+    };
+    let response = state.register_executor(request).await;
+    proto_response(StatusCode::OK, &response)
+}
+
+async fn executor_heartbeat(
+    State(state): State<RuntimeState>,
+    body: Bytes,
+) -> Response {
+    let request = match ExecutorHeartbeat::decode(body) {
+        Ok(request) => request,
+        Err(e) => {
+            return proto_response(
+                StatusCode::BAD_REQUEST,
+                &ProtoError {
+                    message: format!("invalid protobuf request: {e}"),
+                },
+            );
+        }
+    };
+    let response = state.executor_heartbeat(request).await;
+    proto_response(StatusCode::OK, &response)
+}
+
+async fn poll_work(
+    State(state): State<RuntimeState>,
+    body: Bytes,
+) -> Response {
+    let request = match PollWorkRequest::decode(body) {
+        Ok(request) => request,
+        Err(e) => {
+            return proto_response(
+                StatusCode::BAD_REQUEST,
+                &ProtoError {
+                    message: format!("invalid protobuf request: {e}"),
+                },
+            );
+        }
+    };
+    match state.poll_work(request).await {
+        Ok(response) => proto_response(StatusCode::OK, &response),
+        Err(e) => proto_response(StatusCode::BAD_REQUEST, &ProtoError { message: e }),
+    }
+}
+
+async fn report_task_status(
+    State(state): State<RuntimeState>,
+    body: Bytes,
+) -> Response {
+    let request = match TaskStatus::decode(body) {
+        Ok(request) => request,
+        Err(e) => {
+            return proto_response(
+                StatusCode::BAD_REQUEST,
+                &ProtoError {
+                    message: format!("invalid protobuf request: {e}"),
+                },
+            );
+        }
+    };
+    match state.report_task_status(request).await {
+        Ok(response) => proto_response(StatusCode::OK, &response),
+        Err(e) => proto_response(StatusCode::BAD_REQUEST, &ProtoError { message: e }),
+    }
+}
+
 async fn authorize(
     State(state): State<RuntimeState>,
     request: Request,
@@ -546,6 +895,7 @@ pub fn router(state: RuntimeState) -> Router {
         .route("/v1/sql", post(submit_sql))
         .route("/v1/jobs/{id}", get(status).delete(cancel))
         .route("/v1/jobs/{id}/result", get(result))
+        .route("/v1/distributed-jobs/{id}", get(distributed_job_status))
         .route("/v1/workers", get(workers))
         .route("/v1/udf-artifacts", post(upload_udf_artifact))
         .route(
@@ -556,6 +906,10 @@ pub fn router(state: RuntimeState) -> Router {
             "/v1/udf-artifacts/{artifact_id}/payload",
             get(download_udf_artifact),
         )
+        .route("/v1/executors/register", post(register_executor))
+        .route("/v1/executors/heartbeat", post(executor_heartbeat))
+        .route("/v1/executors/poll", post(poll_work))
+        .route("/v1/executors/task-status", post(report_task_status))
         .with_state(state)
         .layer(middleware::from_fn_with_state(auth_state, authorize))
 }
@@ -570,7 +924,10 @@ pub async fn serve(addr: SocketAddr, token: Option<String>) -> std::io::Result<(
 /// Each artifact is written under its (sanitized) filename, so the directory
 /// can be prepended to the Python worker's ``sys.path`` and the artifact
 /// imported by name (module, zip, or wheel).
-fn materialize_artifacts(job_id: Uuid, artifacts: &[(String, Vec<u8>)]) -> Result<PathBuf, String> {
+pub(crate) fn materialize_artifacts(
+    job_id: Uuid,
+    artifacts: &[(String, Vec<u8>)],
+) -> Result<PathBuf, String> {
     // Reject duplicate filenames before creating anything, so a mislabeled
     // artifact set can never silently overwrite one file with another.
     let mut seen = std::collections::HashSet::new();
@@ -631,6 +988,13 @@ fn sanitize_artifact_filename(filename: &str) -> String {
     } else {
         base.to_string()
     }
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 #[cfg(test)]

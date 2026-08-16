@@ -20,11 +20,13 @@
 //! ``JobSubmitRequest.udfs`` (computed by the Python client) are forwarded
 //! verbatim.
 //!
-//! Channel shape (both directions, length-prefixed protobuf)::
+//! Channel shape (both directions, length-prefixed protobuf):
 //!
-//!     worker -> server : WorkerEnvelope{hello}              (startup handshake)
-//!     server -> worker : WorkerRequest{request_id, execute}
-//!     worker -> server : WorkerResponse{request_id, execute}
+//! ```text
+//! worker -> server : WorkerEnvelope{hello}              (startup handshake)
+//! server -> worker : WorkerRequest{request_id, execute}
+//! worker -> server : WorkerResponse{request_id, execute}
+//! ```
 
 use std::{
     collections::HashMap,

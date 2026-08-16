@@ -122,7 +122,9 @@ pub fn create_pyarrow_file_writer(
             io_config,
             partition,
         )?)),
-        #[cfg(feature = "python")]
+        FileFormat::Parquet => Err(DaftError::ComputeError(
+            "Parquet physical write requires the python feature".to_string(),
+        )),
         _ => Err(DaftError::ComputeError(
             "Unsupported file format for physical write".to_string(),
         )),

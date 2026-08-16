@@ -458,6 +458,8 @@ impl PushDownFilter {
             | LogicalPlan::SubqueryAlias(..)
             | LogicalPlan::Window(..)
             | LogicalPlan::Distinct(..)
+            | LogicalPlan::ShuffleRead(..)
+            | LogicalPlan::ShuffleWrite(..)
             | LogicalPlan::VLLMProject(..) => {
                 return Ok(Transformed::no(plan));
             }

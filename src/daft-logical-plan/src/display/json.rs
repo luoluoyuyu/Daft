@@ -58,6 +58,14 @@ pub(crate) fn to_json_value(node: &LogicalPlan) -> serde_json::Value {
         LogicalPlan::IntoPartitions(into_partitions) => json!({
             "num_partitions": into_partitions.num_partitions,
         }),
+        LogicalPlan::ShuffleRead(shuffle_read) => json!({
+            "shuffle_id": shuffle_read.shuffle_id,
+            "partition_idx": shuffle_read.partition_idx,
+        }),
+        LogicalPlan::ShuffleWrite(shuffle_write) => json!({
+            "shuffle_id": shuffle_write.shuffle_id,
+            "num_partitions": shuffle_write.num_partitions,
+        }),
         LogicalPlan::Distinct(_) => json!({}),
         LogicalPlan::Aggregate(aggregate) => json!({
             "aggregations": aggregate.aggregations.iter().map(|e| e.to_string()).collect::<Vec<_>>(),

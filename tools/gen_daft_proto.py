@@ -54,6 +54,7 @@ PROTO_FILES = [
     "daft/v1/worker.proto",
     "daft/v1/udf.proto",
     "daft/v1/plan.proto",
+    "daft/v1/distributed.proto",
 ]
 
 
@@ -254,6 +255,7 @@ def main() -> None:
     # Import + round-trip smoke test against the installed runtime.
     sys.path.insert(0, str(REPO_ROOT))
     from daft.runtime.daft_proto.daft_runtime_proto.v1 import (
+        distributed_pb2,
         plan_pb2,
         runtime_pb2,
         udf_pb2,
@@ -297,6 +299,18 @@ def main() -> None:
     )
     assert (
         worker_pb2.WorkerEnvelope.FromString(envelope.SerializeToString()) == envelope
+    )
+
+    task = distributed_pb2.TaskDefinition(
+        job_id="job-1",
+        stage_id=2,
+        task_id=3,
+        logical_plan=b"\x0a\x02\x08\x01",
+        partition_idx=0,
+        num_partitions=4,
+    )
+    assert (
+        distributed_pb2.TaskDefinition.FromString(task.SerializeToString()) == task
     )
 
     print(f"Regenerated {len(PROTO_FILES)} proto files with {protoc}")

@@ -1,0 +1,186 @@
+syntax = "proto3";
+
+package daft.v1;
+
+option java_package = "com.daft.protocol.v1";
+option java_outer_classname = "DistributedProto";
+option go_package = "daft/v1";
+
+import "daft/v1/udf.proto";
+import "daft/v1/runtime.proto";
+import "daft/v1/plan.proto";
+
+// ---------------------------------------------------------------------------
+// Daft distributed execution control plane.
+//
+// Executors register with the scheduler over HTTP (same protobuf envelope as
+// the rest of the runtime protocol), then poll for work. A job is split into
+// a DAG of stages at the logical-plan level; each stage is split into tasks
+// (stage x partition slice) that executors pick up. Intermediate stages write
+// shuffle partitions over Arrow Flight; downstream stages read them back
+// through the PartitionLocation map carried in their TaskDefinition.
+// JSON is never used on the wire.
+// ---------------------------------------------------------------------------
+
+// Lifecycle state of an executor as tracked by the scheduler.
+enum ExecutorState {
+  EXECUTOR_STATE_UNSPECIFIED = 0;
+  EXECUTOR_STATE_REGISTERED = 1;
+  EXECUTOR_STATE_ACTIVE = 2;
+  EXECUTOR_STATE_LOST = 3;
+}
+
+// Registration payload for POST /v1/executors/register.
+message ExecutorRegistration {
+  // Scheduler-assigned or client-generated unique executor id.
+  string worker_id = 1;
+  // Control-plane address of the executor (its poll/status HTTP endpoint),
+  // e.g. "http://10.0.0.5:8891".
+  string address = 2;
+  // Arrow Flight address used for shuffle data, e.g. "http://10.0.0.5:8892".
+  string flight_address = 3;
+  // Number of vcores the executor can run tasks on concurrently.
+  double cpu_capacity = 4;
+  uint64 memory_bytes = 5;
+  // Python interpreter version for UDF tasks, e.g. "3.11.9".
+  string python_version = 6;
+}
+
+// Response to POST /v1/executors/register.
+message ExecutorRegistrationResponse {
+  bool accepted = 1;
+  string message = 2;
+}
+
+// Heartbeat payload for POST /v1/executors/heartbeat.
+message ExecutorHeartbeat {
+  string worker_id = 1;
+  uint64 timestamp_ms = 2;
+}
+
+// Response to POST /v1/executors/heartbeat.
+message ExecutorHeartbeatResponse {
+  bool ok = 1;
+}
+
+// Request body for POST /v1/executors/poll.
+message PollWorkRequest {
+  string worker_id = 1;
+}
+
+// Response to POST /v1/executors/poll.
+message PollWorkResponse {
+  oneof work {
+    TaskDefinition task = 1;
+    // True when the scheduler has no ready task for this executor right now.
+    bool no_work = 2;
+  }
+  // Shuffle caches the executor should drop before executing the returned
+  // task (or while idle). Filled from jobs that reached a terminal state
+  // whose shuffle locations were reported by this executor.
+  repeated PurgeShuffle purge_shuffles = 3;
+}
+
+// A request to drop a shuffle's caches on an executor. Sent after the job
+// that produced the shuffle reaches a terminal state, so the executor's
+// Flight server does not accumulate stale partition files forever. An empty
+// cache_ids list purges every cache registered for the shuffle.
+message PurgeShuffle {
+  uint64 shuffle_id = 1;
+  repeated uint32 cache_ids = 2;
+}
+
+// A single schedulable unit: one partition slice of one stage.
+message TaskDefinition {
+  string job_id = 1;
+  uint64 stage_id = 2;
+  uint64 task_id = 3;
+  uint64 task_attempt = 4;
+  // Serialized stage sub-plan (daft.v1.LogicalPlan). Intermediate stages
+  // begin with ShuffleReadNode leaves and end with a ShuffleWriteNode; the
+  // final stage is a plain plan whose result partitions are returned.
+  bytes logical_plan = 5;
+  // In-memory partition sets keyed by partition-set cache key (same Arrow IPC
+  // framing as JobSubmitRequest.partition_sets).
+  map<string, bytes> partition_sets = 6;
+  // The partition slice this task is responsible for. Scan sources are
+  // restricted to this slice before serialization; ShuffleRead nodes read
+  // only this partition from the upstream locations.
+  uint64 partition_idx = 7;
+  // Total number of partition slices this stage is split into.
+  uint64 num_partitions = 8;
+  // Parsed Python UDF descriptors for this job (see JobSubmitRequest.udfs).
+  repeated UdfDescriptor udfs = 9;
+  // Content-addressed UDF artifacts staged on the scheduler.
+  repeated string udf_artifact_ids = 10;
+  string python_version = 11;
+  // When set, the stage ends with a ShuffleWriteNode that writes this shuffle
+  // id into the executor's local Flight server.
+  optional uint64 shuffle_id = 12;
+  // Local directories the executor uses for shuffle spill files.
+  repeated string shuffle_dirs = 13;
+  optional string compression = 14;
+  // Upstream shuffle locations, keyed by shuffle id. Each location maps a
+  // Flight server address to the cache ids that hold the shuffle partitions.
+  map<uint64, ShuffleLocation> upstream_shuffles = 15;
+  // True when this task belongs to the final stage: its result is a DAFTRES1
+  // envelope returned to the scheduler instead of shuffle metadata.
+  bool is_final_stage = 16;
+  // Materialized UDF artifact files (sanitized filename -> payload) needed to
+  // execute this job's Python UDFs. The scheduler snapshots the artifact store
+  // at submit time and ships the files inside each task so an executor does
+  // not need a second round trip (or shared storage) to resolve artifact ids.
+  map<string, bytes> udf_artifacts = 17;
+}
+
+// Locations of a shuffle: for every Flight server that wrote data, the cache
+// ids holding that shuffle's partition files.
+message ShuffleLocation {
+  map<string, PartitionCache> servers = 1;
+}
+
+// Task execution state reported back to the scheduler.
+enum TaskState {
+  TASK_STATE_UNSPECIFIED = 0;
+  TASK_STATE_RUNNING = 1;
+  TASK_STATE_SUCCEEDED = 2;
+  TASK_STATE_FAILED = 3;
+}
+
+// Status payload for POST /v1/executors/task-status.
+message TaskStatus {
+  string job_id = 1;
+  uint64 stage_id = 2;
+  uint64 task_id = 3;
+  uint64 task_attempt = 4;
+  TaskState state = 5;
+  // Human-readable error, set only when state == TASK_STATE_FAILED.
+  string error = 6;
+  // For final-stage tasks: DAFTRES1 Arrow IPC envelope with this task's
+  // output partitions.
+  bytes result = 7;
+  // For intermediate-stage tasks: the Flight address of the executor that
+  // wrote the shuffle plus the cache ids registered on its local server
+  // (one cache per task, keyed by the shuffle id written).
+  string flight_address = 8;
+  repeated uint32 cache_ids = 9;
+}
+
+// Ack for POST /v1/executors/task-status.
+message ExecutorTaskStatusResponse {
+  bool accepted = 1;
+  string message = 2;
+}
+
+// Scheduler's view of a running job.
+message DistributedJobStatus {
+  string job_id = 1;
+  JobState state = 2;
+  string error = 3;
+  // Number of stages in the job's stage DAG.
+  uint64 num_stages = 4;
+  // Number of completed tasks across all stages.
+  uint64 completed_tasks = 5;
+  // Total number of tasks across all stages.
+  uint64 num_tasks = 6;
+}

@@ -45,6 +45,8 @@ pub enum LogicalPlan {
     Sort(Sort),
     Repartition(Repartition),
     IntoPartitions(IntoPartitions),
+    ShuffleRead(ShuffleRead),
+    ShuffleWrite(ShuffleWrite),
     Distinct(Distinct),
     Aggregate(Aggregate),
     Pivot(Pivot),
@@ -168,6 +170,8 @@ impl LogicalPlan {
             Self::Sort(Sort { input, .. }) => input.schema(),
             Self::Repartition(Repartition { input, .. }) => input.schema(),
             Self::IntoPartitions(IntoPartitions { input, .. }) => input.schema(),
+            Self::ShuffleRead(ShuffleRead { output_schema, .. }) => output_schema.clone(),
+            Self::ShuffleWrite(ShuffleWrite { output_schema, .. }) => output_schema.clone(),
             Self::Distinct(Distinct { input, .. }) => input.schema(),
             Self::Aggregate(Aggregate { output_schema, .. }) => output_schema.clone(),
             Self::Pivot(Pivot { output_schema, .. }) => output_schema.clone(),
@@ -195,6 +199,8 @@ impl LogicalPlan {
             | Self::Limit(..)
             | Self::IntoBatches(..)
             | Self::IntoPartitions(..)
+            | Self::ShuffleRead(..)
+            | Self::ShuffleWrite(..)
             | Self::Offset(..)
             | Self::Sample(..)
             | Self::MonotonicallyIncreasingId(..) => RequiredCols::new(IndexSet::new(), None),
@@ -365,6 +371,8 @@ impl LogicalPlan {
             Self::Sort(..) => "Sort",
             Self::Repartition(..) => "Repartition",
             Self::IntoPartitions(..) => "IntoPartitions",
+            Self::ShuffleRead(..) => "ShuffleRead",
+            Self::ShuffleWrite(..) => "ShuffleWrite",
             Self::Distinct(..) => "Distinct",
             Self::Aggregate(..) => "Aggregate",
             Self::Pivot(..) => "Pivot",
@@ -398,6 +406,8 @@ impl LogicalPlan {
             | Self::Sort(Sort { stats_state, .. })
             | Self::Repartition(Repartition { stats_state, .. })
             | Self::IntoPartitions(IntoPartitions { stats_state, .. })
+            | Self::ShuffleRead(ShuffleRead { stats_state, .. })
+            | Self::ShuffleWrite(ShuffleWrite { stats_state, .. })
             | Self::Distinct(Distinct { stats_state, .. })
             | Self::Aggregate(Aggregate { stats_state, .. })
             | Self::Pivot(Pivot { stats_state, .. })
@@ -440,6 +450,8 @@ impl LogicalPlan {
             Self::Sort(plan) => Self::Sort(plan.with_materialized_stats()),
             Self::Repartition(plan) => Self::Repartition(plan.with_materialized_stats()),
             Self::IntoPartitions(plan) => Self::IntoPartitions(plan.with_materialized_stats()),
+            Self::ShuffleRead(plan) => Self::ShuffleRead(plan.with_materialized_stats()),
+            Self::ShuffleWrite(plan) => Self::ShuffleWrite(plan.with_materialized_stats()),
             Self::Distinct(plan) => Self::Distinct(plan.with_materialized_stats()),
             Self::Aggregate(plan) => Self::Aggregate(plan.with_materialized_stats()),
             Self::Pivot(plan) => Self::Pivot(plan.with_materialized_stats()),
@@ -478,6 +490,8 @@ impl LogicalPlan {
             Self::Sort(sort) => sort.multiline_display(),
             Self::Repartition(repartition) => repartition.multiline_display(),
             Self::IntoPartitions(into_partitions) => into_partitions.multiline_display(),
+            Self::ShuffleRead(shuffle_read) => shuffle_read.multiline_display(),
+            Self::ShuffleWrite(shuffle_write) => shuffle_write.multiline_display(),
             Self::Distinct(distinct) => distinct.multiline_display(),
             Self::Aggregate(aggregate) => aggregate.multiline_display(),
             Self::Pivot(pivot) => pivot.multiline_display(),
@@ -513,6 +527,8 @@ impl LogicalPlan {
             Self::Sort(Sort { input, .. }) => vec![input],
             Self::Repartition(Repartition { input, .. }) => vec![input],
             Self::IntoPartitions(IntoPartitions { input, .. }) => vec![input],
+            Self::ShuffleRead(..) => vec![],
+            Self::ShuffleWrite(ShuffleWrite { input, .. }) => vec![input],
             Self::Distinct(Distinct { input, .. }) => vec![input],
             Self::Aggregate(Aggregate { input, .. }) => vec![input],
             Self::Pivot(Pivot { input, .. }) => vec![input],
@@ -606,6 +622,22 @@ impl LogicalPlan {
                 Self::IntoPartitions(IntoPartitions { num_partitions, .. }) => {
                     Self::IntoPartitions(IntoPartitions::new(input.clone(), *num_partitions))
                 }
+                Self::ShuffleWrite(ShuffleWrite {
+                    shuffle_id,
+                    num_partitions,
+                    repartition_spec,
+                    shuffle_dirs,
+                    compression,
+                    ..
+                }) => Self::ShuffleWrite(ShuffleWrite::new(
+                    input.clone(),
+                    *shuffle_id,
+                    *num_partitions,
+                    repartition_spec.clone(),
+                    shuffle_dirs.clone(),
+                    compression.clone(),
+                )),
+                Self::ShuffleRead(..) => panic!("ShuffleRead is a leaf node"),
                 Self::Aggregate(Aggregate {
                     aggregations,
                     groupby,
@@ -938,6 +970,8 @@ impl LogicalPlan {
             | Self::Sort(Sort { plan_id, .. })
             | Self::Repartition(Repartition { plan_id, .. })
             | Self::IntoPartitions(IntoPartitions { plan_id, .. })
+            | Self::ShuffleRead(ShuffleRead { plan_id, .. })
+            | Self::ShuffleWrite(ShuffleWrite { plan_id, .. })
             | Self::Distinct(Distinct { plan_id, .. })
             | Self::Aggregate(Aggregate { plan_id, .. })
             | Self::Pivot(Pivot { plan_id, .. })
@@ -971,6 +1005,8 @@ impl LogicalPlan {
             | Self::Sort(Sort { node_id, .. })
             | Self::Repartition(Repartition { node_id, .. })
             | Self::IntoPartitions(IntoPartitions { node_id, .. })
+            | Self::ShuffleRead(ShuffleRead { node_id, .. })
+            | Self::ShuffleWrite(ShuffleWrite { node_id, .. })
             | Self::Distinct(Distinct { node_id, .. })
             | Self::Aggregate(Aggregate { node_id, .. })
             | Self::Pivot(Pivot { node_id, .. })
@@ -1008,6 +1044,10 @@ impl LogicalPlan {
             Self::Repartition(repartition) => Self::Repartition(repartition.with_plan_id(plan_id)),
             Self::IntoPartitions(into_partitions) => {
                 Self::IntoPartitions(into_partitions.with_plan_id(plan_id))
+            }
+            Self::ShuffleRead(shuffle_read) => Self::ShuffleRead(shuffle_read.with_plan_id(plan_id)),
+            Self::ShuffleWrite(shuffle_write) => {
+                Self::ShuffleWrite(shuffle_write.with_plan_id(plan_id))
             }
             Self::Distinct(distinct) => Self::Distinct(distinct.with_plan_id(plan_id)),
             Self::Aggregate(aggregate) => Self::Aggregate(aggregate.with_plan_id(plan_id)),
@@ -1050,6 +1090,10 @@ impl LogicalPlan {
             Self::Repartition(repartition) => Self::Repartition(repartition.with_node_id(node_id)),
             Self::IntoPartitions(into_partitions) => {
                 Self::IntoPartitions(into_partitions.with_node_id(node_id))
+            }
+            Self::ShuffleRead(shuffle_read) => Self::ShuffleRead(shuffle_read.with_node_id(node_id)),
+            Self::ShuffleWrite(shuffle_write) => {
+                Self::ShuffleWrite(shuffle_write.with_node_id(node_id))
             }
             Self::Distinct(distinct) => Self::Distinct(distinct.with_node_id(node_id)),
             Self::Aggregate(aggregate) => Self::Aggregate(aggregate.with_node_id(node_id)),
@@ -1167,6 +1211,8 @@ impl_from_data_struct_for_logical_plan!(Unpivot);
 impl_from_data_struct_for_logical_plan!(Sort);
 impl_from_data_struct_for_logical_plan!(Repartition);
 impl_from_data_struct_for_logical_plan!(IntoPartitions);
+impl_from_data_struct_for_logical_plan!(ShuffleRead);
+impl_from_data_struct_for_logical_plan!(ShuffleWrite);
 impl_from_data_struct_for_logical_plan!(Distinct);
 impl_from_data_struct_for_logical_plan!(Aggregate);
 impl_from_data_struct_for_logical_plan!(Pivot);

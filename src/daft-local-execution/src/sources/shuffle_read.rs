@@ -192,11 +192,33 @@ impl ShuffleReadSource {
                     }
                     Some(join_result) = task_set.join_next(), if !task_set.is_empty() => {
                         match join_result {
-                            Ok(Ok(completed_input_id)) => {
+                            Ok(Ok((completed_input_id, num_morsels))) => {
+                                eprintln!(
+                                    "[shuffle-read] forward task for input {completed_input_id} done ({num_morsels} morsels)"
+                                );
                                 let count = input_id_pending_counts.get_mut(&completed_input_id).expect("Input id should be present in input_id_pending_counts");
                                 *count = count.saturating_sub(1);
                                 if *count == 0 {
                                     input_id_pending_counts.remove(&completed_input_id);
+                                    if num_morsels == 0 {
+                                        // Empty partition: downstream blocking sinks only finalize
+                                        // an input after seeing at least one morsel, so emit an
+                                        // empty morsel before flushing.
+                                        let empty = MicroPartition::empty(Some(schema.clone()));
+                                        if output_sender
+                                            .send(PipelineMessage::Morsel {
+                                                input_id: completed_input_id,
+                                                partition: empty,
+                                            })
+                                            .await
+                                            .is_err()
+                                        {
+                                            return Ok(());
+                                        }
+                                    }
+                                    eprintln!(
+                                        "[shuffle-read] sending flush for input {completed_input_id}"
+                                    );
                                     if output_sender.send(PipelineMessage::Flush(completed_input_id)).await.is_err() {
                                         return Ok(());
                                     }
@@ -219,7 +241,8 @@ async fn forward_partition_stream(
     schema: SchemaRef,
     sender: Sender<PipelineMessage>,
     input_id: InputId,
-) -> DaftResult<InputId> {
+) -> DaftResult<(InputId, usize)> {
+    let mut num_morsels = 0;
     while let Some(batch) = stream.next().await {
         let mp = MicroPartition::new_loaded(schema.clone(), vec![batch?].into(), None);
         if sender
@@ -232,8 +255,9 @@ async fn forward_partition_stream(
         {
             break;
         }
+        num_morsels += 1;
     }
-    Ok(input_id)
+    Ok((input_id, num_morsels))
 }
 
 #[async_trait]

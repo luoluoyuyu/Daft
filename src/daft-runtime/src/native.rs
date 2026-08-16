@@ -6,81 +6,12 @@
 //! same `DAFTRES1` IPC envelope used by the Python-side executor. Partition
 //! sets arrive as raw Arrow IPC blobs from the protobuf wire protocol.
 
-use std::{
-    collections::HashMap,
-    sync::Arc,
-};
+use std::sync::Arc;
 
-use common_daft_config::DaftExecutionConfig;
 use common_error::DaftResult;
-use daft_local_execution::{NativeExecutor, block_on_global};
-use daft_local_plan::translate;
-use daft_logical_plan::LogicalPlanBuilder;
 use daft_micropartition::{MicroPartition, MicroPartitionRef};
 
 pub const RESULT_MAGIC: &[u8; 8] = b"DAFTRES1";
-
-/// Execute a serialized, UDF-free logical plan entirely in Rust.
-///
-/// `partition_sets` maps partition-set cache keys to raw partition blobs
-/// (see [`decode_partition_set`] for the framing).
-pub fn execute_plan_native(
-    plan_bytes: Vec<u8>,
-    partition_sets: HashMap<String, Vec<u8>>,
-) -> Result<Vec<u8>, String> {
-    let proto_plan = daft_protocol::decode::<daft_protocol::daft::v1::LogicalPlan>(&plan_bytes)
-        .map_err(|e| format!("failed to decode logical plan: {e}"))?;
-    let plan = daft_logical_plan::proto::plan_from_proto(proto_plan)
-        .map_err(|e| format!("failed to decode logical plan: {e}"))?;
-
-    let mut psets: HashMap<String, Vec<MicroPartitionRef>> =
-        HashMap::with_capacity(partition_sets.len());
-    for (key, blob) in partition_sets {
-        let partitions = decode_partition_set(&blob)
-            .map_err(|e| format!("failed to decode partition set {key}: {e}"))?;
-        psets.insert(key, partitions);
-    }
-
-    let builder = LogicalPlanBuilder::new(plan, None);
-    block_on_global(async move {
-        let optimized = builder
-            .optimize_async(Arc::new(DaftExecutionConfig::default()))
-            .await
-            .map_err(|e| format!("failed to optimize logical plan: {e}"))?;
-
-        let (physical_plan, inputs) = translate(&optimized.plan, &psets)
-            .map_err(|e| format!("failed to lower logical plan: {e}"))?;
-
-        let exec_cfg = Arc::new(DaftExecutionConfig::default());
-        let mut executor = NativeExecutor::new(false, "");
-        let (fingerprint, enqueue_future) = executor
-            .run(
-                &physical_plan,
-                exec_cfg,
-                Vec::new(),
-                None,
-                inputs,
-                0,
-                true,
-            )
-            .map_err(|e| format!("failed to start execution: {e}"))?;
-
-        let mut result = enqueue_future
-            .await
-            .map_err(|e| format!("execution failed: {e}"))?;
-        let mut partitions: Vec<MicroPartition> = Vec::new();
-        while let Some(partition) = result.next_partition().await {
-            partitions.push(partition);
-        }
-        executor
-            .try_finish(fingerprint, 0)
-            .map_err(|e| format!("failed to start finish: {e}"))?
-            .await
-            .map_err(|e| format!("failed to finish execution: {e}"))?;
-
-        encode_result_envelope(&partitions).map_err(|e| e.to_string())
-    })
-}
 
 /// Encode a list of partitions as the `DAFTRES1` IPC envelope.
 pub fn encode_result_envelope(partitions: &[MicroPartition]) -> DaftResult<Vec<u8>> {
@@ -95,9 +26,47 @@ pub fn encode_result_envelope(partitions: &[MicroPartition]) -> DaftResult<Vec<u
     Ok(envelope)
 }
 
+/// Concatenate multiple `DAFTRES1` envelopes into a single envelope.
+///
+/// The scheduler uses this to merge per-task final results back into the one
+/// envelope the Python client expects from a job. The per-envelope magic and
+/// count headers are dropped; partition IPC streams are copied verbatim.
+pub fn concat_result_envelopes(envelopes: &[&[u8]]) -> Result<Vec<u8>, String> {
+    let mut total: u32 = 0;
+    for envelope in envelopes {
+        let mut offset = 0usize;
+        if envelope.get(..RESULT_MAGIC.len()) != Some(RESULT_MAGIC.as_slice()) {
+            return Err("invalid DAFTRES1 envelope: bad magic".to_string());
+        }
+        offset += RESULT_MAGIC.len();
+        total += read_u32(envelope, &mut offset)?;
+    }
+    let mut combined = Vec::new();
+    combined.extend_from_slice(RESULT_MAGIC);
+    combined.extend_from_slice(&total.to_le_bytes());
+    for envelope in envelopes {
+        // Skip the per-envelope magic, then read the count, and keep the
+        // length-prefixed per-partition IPC streams.
+        let mut offset = RESULT_MAGIC.len();
+        let count = read_u32(envelope, &mut offset)?;
+        for _ in 0..count {
+            let len = read_u64(envelope, &mut offset)?;
+            let len = usize::try_from(len)
+                .map_err(|_| "partition stream length overflow".to_string())?;
+            let slice = envelope
+                .get(offset..offset + len)
+                .ok_or_else(|| "truncated DAFTRES1 envelope".to_string())?;
+            combined.extend_from_slice(&(len as u64).to_le_bytes());
+            combined.extend_from_slice(slice);
+            offset += len;
+        }
+    }
+    Ok(combined)
+}
+
 /// Decode a partition-set blob:
 /// `u32 LE` count, then per partition `u64 LE` length + Arrow IPC stream bytes.
-fn decode_partition_set(blob: &[u8]) -> Result<Vec<MicroPartitionRef>, String> {
+pub(crate) fn decode_partition_set(blob: &[u8]) -> Result<Vec<MicroPartitionRef>, String> {
     let mut offset = 0usize;
     let count = read_u32(blob, &mut offset)?;
     let mut partitions = Vec::with_capacity(count as usize);

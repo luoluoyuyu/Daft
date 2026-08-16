@@ -12,7 +12,7 @@ mod pipeline;
 mod resource_manager;
 mod run;
 mod runtime_stats;
-mod shuffle_metadata;
+pub mod shuffle_metadata;
 mod sinks;
 mod sources;
 mod streaming_sink;

@@ -88,6 +88,67 @@ impl ShuffleFlightServer {
         Ok(())
     }
 
+    /// Return the numeric cache ids registered for a shuffle on this server.
+    ///
+    /// Used by the distributed executor when reporting a completed
+    /// intermediate task: the scheduler stores these ids (together with the
+    /// server's Flight address) as the upstream locations for the shuffle, so
+    /// downstream tasks know which caches to read from.
+    pub async fn cache_ids(&self, shuffle_id: u64) -> Vec<u32> {
+        let caches = self.shuffle_caches.lock().await;
+        caches
+            .get(&shuffle_id)
+            .map(|caches| {
+                caches
+                    .iter()
+                    .filter_map(|cache| cache.cache_id().parse::<u32>().ok())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Drop the caches registered for a shuffle and remove their on-disk
+    /// partition files. An empty ``cache_ids`` purges every cache of the
+    /// shuffle. Called by the distributed executor when the scheduler tells
+    /// it a completed job's shuffle is no longer needed.
+    pub async fn purge_shuffle_caches(
+        &self,
+        shuffle_id: u64,
+        cache_ids: &[u32],
+    ) -> DaftResult<()> {
+        let removed = {
+            let mut caches = self.shuffle_caches.lock().await;
+            let Some(shuffle_caches) = caches.get_mut(&shuffle_id) else {
+                return Ok(());
+            };
+            let mut remaining = Vec::new();
+            let mut removed = Vec::new();
+            for cache in shuffle_caches.drain(..) {
+                let matches = cache_ids.is_empty()
+                    || cache
+                        .cache_id()
+                        .parse::<u32>()
+                        .map(|id| cache_ids.contains(&id))
+                        .unwrap_or(false);
+                if matches {
+                    removed.push(cache);
+                } else {
+                    remaining.push(cache);
+                }
+            }
+            *shuffle_caches = remaining;
+            if shuffle_caches.is_empty() {
+                caches.remove(&shuffle_id);
+            }
+            removed
+        };
+        // Remove the spill files off the lock: this is blocking I/O.
+        for cache in removed {
+            cache.cleanup_files();
+        }
+        Ok(())
+    }
+
     async fn get_shuffle_file_paths(
         &self,
         shuffle_id: u64,
@@ -124,6 +185,11 @@ impl ShuffleFlightServer {
             .iter()
             .flat_map(|cache| cache.file_paths_for_partition(partition_idx))
             .collect::<Vec<_>>();
+        if file_paths.is_empty() {
+            eprintln!(
+                "[shuffle-server] shuffle {shuffle_id} partition {partition_idx}: no files (empty partition)"
+            );
+        }
 
         Some((file_paths, schema))
     }

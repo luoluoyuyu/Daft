@@ -46,12 +46,30 @@ def _wait_for_port(port: int, timeout_s: float = 15.0) -> None:
     raise TimeoutError(f"daft-runtime did not start listening on port {port}")
 
 
+def _wait_for_registered(proc: subprocess.Popen, timeout_s: float = 15.0) -> None:
+    """Wait until the executor has registered with the scheduler."""
+    deadline = time.monotonic() + timeout_s
+    collected: list[str] = []
+    while time.monotonic() < deadline:
+        assert proc.stdout is not None
+        line = proc.stdout.readline()
+        if not line:
+            time.sleep(0.05)
+            continue
+        collected.append(line)
+        if "registered with scheduler" in line:
+            return
+    raise TimeoutError(
+        f"executor did not register with the scheduler; output:\n{''.join(collected)}"
+    )
+
+
 @pytest.fixture
 def rust_runtime():
     if not RUNTIME_BINARY.is_file():
         pytest.skip("daft-runtime binary not built; run `cargo build -p daft-runtime`")
     port = _free_port()
-    proc = subprocess.Popen(
+    scheduler = subprocess.Popen(
         [str(RUNTIME_BINARY)],
         env={
             **os.environ,
@@ -64,14 +82,36 @@ def rust_runtime():
     )
     try:
         _wait_for_port(port)
-        yield f"http://127.0.0.1:{port}", "test-secret"
-    finally:
-        proc.terminate()
+        executor = subprocess.Popen(
+            [str(RUNTIME_BINARY), "--executor"],
+            env={
+                **os.environ,
+                "DAFT_EXECUTOR": "1",
+                "DAFT_SCHEDULER_ADDRESS": f"http://127.0.0.1:{port}",
+                "DAFT_FLIGHT_IP": "127.0.0.1",
+                "DAFT_RUNTIME_TOKEN": "test-secret",
+            },
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
         try:
-            proc.wait(timeout=5)
+            _wait_for_registered(executor)
+            yield f"http://127.0.0.1:{port}", "test-secret"
+        finally:
+            executor.terminate()
+            try:
+                executor.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                executor.kill()
+                executor.wait(timeout=5)
+    finally:
+        scheduler.terminate()
+        try:
+            scheduler.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait(timeout=5)
+            scheduler.kill()
+            scheduler.wait(timeout=5)
 
 
 def _udf_triple() -> daft.udf.Udf:
@@ -213,23 +253,26 @@ def test_rust_runtime_routes_on_requires_udf_flag(rust_runtime) -> None:
     endpoint, token = rust_runtime
     client = RuntimeClient(endpoint, token=token)
 
-    # Run the binary from a directory outside the repo with no Python available
-    # (DAFT_RUNTIME_PYTHON points at a missing interpreter and PATH has none).
-    # The pure-Rust path must still execute; the UDF path must fail because it
-    # cannot resolve a Python worker.
+    # Run scheduler + executor from a directory outside the repo with no
+    # Python available (DAFT_RUNTIME_PYTHON points at a missing interpreter
+    # and PATH has none). The pure-Rust path must still execute on the
+    # executor; the UDF path must fail because the executor cannot resolve a
+    # Python worker.
     with tempfile.TemporaryDirectory() as tmp:
         isolated_bin = Path(tmp) / "daft-runtime"
         shutil.copy2(RUNTIME_BINARY, isolated_bin)
         port = _free_port()
-        proc = subprocess.Popen(
+        isolated_env = {
+            "DAFT_RUNTIME_PYTHON": "/nonexistent/python",
+            "PATH": tmp,
+            "HOME": tmp,
+        }
+        scheduler = subprocess.Popen(
             [str(isolated_bin)],
             cwd=tmp,
             env={
+                **isolated_env,
                 "DAFT_RUNTIME_ADDRESS": f"127.0.0.1:{port}",
-                "DAFT_RUNTIME_TOKEN": "test-secret",
-                "DAFT_RUNTIME_PYTHON": "/nonexistent/python",
-                "PATH": tmp,
-                "HOME": tmp,
             },
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -237,38 +280,58 @@ def test_rust_runtime_routes_on_requires_udf_flag(rust_runtime) -> None:
         )
         try:
             _wait_for_port(port)
-            isolated_client = RuntimeClient(
-                f"http://127.0.0.1:{port}", token="test-secret"
+            executor = subprocess.Popen(
+                [str(isolated_bin), "--executor"],
+                cwd=tmp,
+                env={
+                    **isolated_env,
+                    "DAFT_EXECUTOR": "1",
+                    "DAFT_SCHEDULER_ADDRESS": f"http://127.0.0.1:{port}",
+                    "DAFT_FLIGHT_IP": "127.0.0.1",
+                },
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
             )
-
-            # Pure-Rust execution must not require Python at all.
-            df = daft.from_pydict({"id": [1, 2, 3]}).filter(col("id") > 1)
-            plan, execution, partition_sets = serialize_plan_parts(df)
-            assert execution.requires_udf is False
-            result = isolated_client.submit(
-                plan, execution=execution, partition_sets=partition_sets
-            ).result()
-            assert result[0].to_pydict() == {"id": [2, 3]}
-
-            # A plan flagged as requiring a Python worker must fail to resolve
-            # the interpreter in this environment.
-            udf_df = daft.from_pydict({"x": [1, 2, 3]}).with_column(
-                "t", _udf_triple()(col("x"))
-            )
-            plan2, execution2, partition_sets2 = serialize_plan_parts(udf_df)
-            assert execution2.requires_udf is True
-            job = isolated_client.submit(
-                plan2, execution=execution2, partition_sets=partition_sets2
-            )
-            with pytest.raises(Exception, match="no Python interpreter found"):
-                job.result()
-        finally:
-            proc.terminate()
             try:
-                proc.wait(timeout=5)
+                _wait_for_registered(executor)
+                isolated_client = RuntimeClient(f"http://127.0.0.1:{port}")
+
+                # Pure-Rust execution must not require Python at all.
+                df = daft.from_pydict({"id": [1, 2, 3]}).filter(col("id") > 1)
+                plan, execution, partition_sets = serialize_plan_parts(df)
+                assert execution.requires_udf is False
+                result = isolated_client.submit(
+                    plan, execution=execution, partition_sets=partition_sets
+                ).result()
+                assert result[0].to_pydict() == {"id": [2, 3]}
+
+                # A plan flagged as requiring a Python worker must fail to
+                # resolve the interpreter on the executor.
+                udf_df = daft.from_pydict({"x": [1, 2, 3]}).with_column(
+                    "t", _udf_triple()(col("x"))
+                )
+                plan2, execution2, partition_sets2 = serialize_plan_parts(udf_df)
+                assert execution2.requires_udf is True
+                job = isolated_client.submit(
+                    plan2, execution=execution2, partition_sets=partition_sets2
+                )
+                with pytest.raises(Exception, match="no Python interpreter found"):
+                    job.result()
+            finally:
+                executor.terminate()
+                try:
+                    executor.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    executor.kill()
+                    executor.wait(timeout=5)
+        finally:
+            scheduler.terminate()
+            try:
+                scheduler.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=5)
+                scheduler.kill()
+                scheduler.wait(timeout=5)
 
 
 def test_rust_runtime_udf_artifact_endpoints(rust_runtime) -> None:
