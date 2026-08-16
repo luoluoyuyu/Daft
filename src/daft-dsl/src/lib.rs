@@ -12,6 +12,7 @@ pub use common_metrics::operator_metrics;
 mod visitor;
 
 mod treenode;
+pub mod udf;
 pub mod utils;
 
 pub use common_treenode;

@@ -1,0 +1,1399 @@
+syntax = "proto3";
+
+package daft.v1;
+
+option java_package = "com.daft.protocol.v1";
+option java_outer_classname = "PlanProto";
+option go_package = "daft/v1";
+
+// ---------------------------------------------------------------------------
+// Daft logical plan wire schema.
+//
+// This file models the full ``daft-logical-plan`` AST as protobuf messages.
+// ``LogicalPlanBuilder.to_bytes()`` materializes physical scans, strips
+// in-memory partition cache entries, and then encodes the tree as this
+// protobuf schema; ``from_bytes()`` decodes it back. JSON is never used and
+// the plan is never bincode-encoded as a whole.
+//
+// Binary leaf policy (the only bincode/Arrow IPC left in the protocol):
+//   * ``Series`` / ``RecordBatch`` values (literal payloads, range-repartition
+//     boundaries) are Arrow IPC streams.
+//   * Configuration / metadata structs that are opaque to plan rewriting
+//     (``IOConfig``, ``SourceConfig``, ``StorageConfig``, ``TableMetadata``,
+//     ``TableStatistics``, ``PartitionSpec``, ``DaftParquetMetadata``,
+//     ``ResourceRequest``, image payloads) are bincode-encoded bytes.
+//   * Python objects (UDF closures, bound args, ray options, VLLM engine args,
+//     catalog sinks) are cloudpickle bytes produced by the Python-side
+//     serializer; the pure-Rust runtime treats them as opaque and only the
+//     Python worker unpickles them.
+//
+// Subquery expressions (``Subquery`` / ``InSubquery`` / ``Exists``) are
+// declared in this schema for completeness but raise a serialization error:
+// they hold non-serializable internal plan references.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Logical plan tree
+// ---------------------------------------------------------------------------
+
+message LogicalPlan {
+  oneof node {
+    SourceNode source = 1;
+    ShardNode shard = 2;
+    ProjectNode project = 3;
+    UdfProjectNode udf_project = 4;
+    FilterNode filter = 5;
+    IntoBatchesNode into_batches = 6;
+    LimitNode limit = 7;
+    OffsetNode offset = 8;
+    ExplodeNode explode = 9;
+    UnpivotNode unpivot = 10;
+    SortNode sort = 11;
+    RepartitionNode repartition = 12;
+    IntoPartitionsNode into_partitions = 13;
+    DistinctNode distinct = 14;
+    AggregateNode aggregate = 15;
+    PivotNode pivot = 16;
+    ConcatNode concat = 17;
+    IntersectNode intersect = 18;
+    UnionNode union = 19;
+    JoinNode join = 20;
+    SinkNode sink = 21;
+    SampleNode sample = 22;
+    ShuffleNode shuffle = 23;
+    MonotonicallyIncreasingIdNode monotonically_increasing_id = 24;
+    SubqueryAliasNode subquery_alias = 25;
+    WindowNode window = 26;
+    TopNNode top_n = 27;
+    VllmProjectNode vllm_project = 28;
+  }
+}
+
+message SourceNode {
+  optional uint64 plan_id = 1;
+  optional uint64 node_id = 2;
+  Schema output_schema = 3;
+  SourceInfo source_info = 4;
+  StatsState stats = 5;
+}
+
+message ShardNode {
+  optional uint64 plan_id = 1;
+  optional uint64 node_id = 2;
+  LogicalPlan input = 3;
+  Sharder sharder = 4;
+  StatsState stats = 5;
+}
+
+message ProjectNode {
+  optional uint64 plan_id = 1;
+  optional uint64 node_id = 2;
+  LogicalPlan input = 3;
+  repeated Expression projection = 4;
+  Schema projected_schema = 5;
+  StatsState stats = 6;
+}
+
+message UdfProjectNode {
+  optional uint64 plan_id = 1;
+  optional uint64 node_id = 2;
+  LogicalPlan input = 3;
+  Expression expr = 4;
+  UdfProperties udf_properties = 5;
+  repeated Expression passthrough_columns = 6;
+  Schema projected_schema = 7;
+  StatsState stats = 8;
+}
+
+message FilterNode {
+  optional uint64 plan_id = 1;
+  optional uint64 node_id = 2;
+  LogicalPlan input = 3;
+  Expression predicate = 4;
+  StatsState stats = 5;
+}
+
+message IntoBatchesNode {
+  optional uint64 plan_id = 1;
+  optional uint64 node_id = 2;
+  LogicalPlan input = 3;
+  uint64 batch_size = 4;
+  StatsState stats = 5;
+}
+
+message LimitNode {
+  optional uint64 plan_id = 1;
+  optional uint64 node_id = 2;
+  LogicalPlan input = 3;
+  uint64 limit = 4;
+  optional uint64 offset = 5;
+  bool eager = 6;
+  StatsState stats = 7;
+}
+
+message OffsetNode {
+  optional uint64 plan_id = 1;
+  optional uint64 node_id = 2;
+  LogicalPlan input = 3;
+  uint64 offset = 4;
+  StatsState stats = 5;
+}
+
+message ExplodeNode {
+  optional uint64 plan_id = 1;
+  optional uint64 node_id = 2;
+  LogicalPlan input = 3;
+  repeated Expression to_explode = 4;
+  bool ignore_empty_and_null = 5;
+  optional string index_column = 6;
+  Schema exploded_schema = 7;
+  StatsState stats = 8;
+}
+
+message UnpivotNode {
+  optional uint64 plan_id = 1;
+  optional uint64 node_id = 2;
+  LogicalPlan input = 3;
+  repeated Expression ids = 4;
+  repeated Expression values = 5;
+  string variable_name = 6;
+  string value_name = 7;
+  Schema output_schema = 8;
+  StatsState stats = 9;
+}
+
+message SortNode {
+  optional uint64 plan_id = 1;
+  optional uint64 node_id = 2;
+  LogicalPlan input = 3;
+  repeated Expression sort_by = 4;
+  repeated bool descending = 5;
+  repeated bool nulls_first = 6;
+  StatsState stats = 7;
+}
+
+message RepartitionNode {
+  optional uint64 plan_id = 1;
+  optional uint64 node_id = 2;
+  LogicalPlan input = 3;
+  RepartitionSpec spec = 4;
+  StatsState stats = 5;
+}
+
+message IntoPartitionsNode {
+  optional uint64 plan_id = 1;
+  optional uint64 node_id = 2;
+  LogicalPlan input = 3;
+  uint64 num_partitions = 4;
+  StatsState stats = 5;
+}
+
+message DistinctNode {
+  optional uint64 plan_id = 1;
+  optional uint64 node_id = 2;
+  LogicalPlan input = 3;
+  // None is encoded as the absence of this message.
+  ExpressionList columns = 4;
+  StatsState stats = 5;
+}
+
+message AggregateNode {
+  optional uint64 plan_id = 1;
+  optional uint64 node_id = 2;
+  LogicalPlan input = 3;
+  repeated Expression aggregations = 4;
+  repeated Expression groupby = 5;
+  Schema output_schema = 6;
+  StatsState stats = 7;
+}
+
+message PivotNode {
+  optional uint64 plan_id = 1;
+  optional uint64 node_id = 2;
+  LogicalPlan input = 3;
+  repeated Expression group_by = 4;
+  Expression pivot_column = 5;
+  Expression value_column = 6;
+  AggExpression aggregation = 7;
+  repeated string names = 8;
+  Schema output_schema = 9;
+  StatsState stats = 10;
+}
+
+message ConcatNode {
+  optional uint64 plan_id = 1;
+  optional uint64 node_id = 2;
+  LogicalPlan input = 3;
+  LogicalPlan other = 4;
+  StatsState stats = 5;
+}
+
+message IntersectNode {
+  optional uint64 plan_id = 1;
+  optional uint64 node_id = 2;
+  LogicalPlan lhs = 3;
+  LogicalPlan rhs = 4;
+  bool is_all = 5;
+}
+
+message UnionNode {
+  optional uint64 plan_id = 1;
+  optional uint64 node_id = 2;
+  LogicalPlan lhs = 3;
+  LogicalPlan rhs = 4;
+  SetQuantifier quantifier = 5;
+  UnionStrategy strategy = 6;
+}
+
+message JoinNode {
+  optional uint64 plan_id = 1;
+  optional uint64 node_id = 2;
+  LogicalPlan left = 3;
+  LogicalPlan right = 4;
+  Expression on = 5; // absent => no join predicate (cross-ish join)
+  JoinType join_type = 6;
+  optional JoinStrategy join_strategy = 7;
+  Schema output_schema = 8;
+  StatsState stats = 9;
+  KeyFilteringConfig key_filtering_config = 10;
+}
+
+message SinkNode {
+  optional uint64 plan_id = 1;
+  optional uint64 node_id = 2;
+  LogicalPlan input = 3;
+  Schema schema = 4;
+  SinkInfo sink_info = 5;
+  StatsState stats = 6;
+}
+
+message SampleNode {
+  optional uint64 plan_id = 1;
+  optional uint64 node_id = 2;
+  LogicalPlan input = 3;
+  optional double fraction = 4;
+  optional uint64 size = 5;
+  bool with_replacement = 6;
+  optional uint64 seed = 7;
+  StatsState stats = 8;
+}
+
+message ShuffleNode {
+  optional uint64 plan_id = 1;
+  optional uint64 node_id = 2;
+  LogicalPlan input = 3;
+  optional uint64 seed = 4;
+  StatsState stats = 5;
+}
+
+message MonotonicallyIncreasingIdNode {
+  optional uint64 plan_id = 1;
+  optional uint64 node_id = 2;
+  LogicalPlan input = 3;
+  Schema schema = 4;
+  string column_name = 5;
+  optional uint64 starting_offset = 6;
+  StatsState stats = 7;
+}
+
+message SubqueryAliasNode {
+  optional uint64 plan_id = 1;
+  optional uint64 node_id = 2;
+  LogicalPlan input = 3;
+  string name = 4;
+  StatsState stats = 5;
+}
+
+message WindowNode {
+  optional uint64 plan_id = 1;
+  optional uint64 node_id = 2;
+  LogicalPlan input = 3;
+  repeated WindowExpr window_functions = 4;
+  repeated string aliases = 5;
+  WindowSpec window_spec = 6;
+  Schema schema = 7;
+  StatsState stats = 8;
+}
+
+message TopNNode {
+  optional uint64 plan_id = 1;
+  optional uint64 node_id = 2;
+  LogicalPlan input = 3;
+  repeated Expression sort_by = 4;
+  repeated bool descending = 5;
+  repeated bool nulls_first = 6;
+  uint64 limit = 7;
+  optional uint64 offset = 8;
+  StatsState stats = 9;
+}
+
+message VllmProjectNode {
+  optional uint64 plan_id = 1;
+  optional uint64 node_id = 2;
+  VllmExpr expr = 3;
+  LogicalPlan input = 4;
+  string output_column_name = 5;
+  Schema output_schema = 6;
+  StatsState stats = 7;
+}
+
+// ---------------------------------------------------------------------------
+// Expressions
+// ---------------------------------------------------------------------------
+
+message Expression {
+  oneof expr {
+    Column column = 1;
+    AliasExpr alias = 2;
+    AggExpression agg = 3;
+    BinaryOpExpr binary_op = 4;
+    CastExpr cast = 5;
+    FunctionExpr function = 6;
+    OverExpr over = 7;
+    WindowExpr window_function = 8;
+    Expression not = 9;
+    Expression is_null = 10;
+    Expression not_null = 11;
+    FillNullExpr fill_null = 12;
+    IsInExpr is_in = 13;
+    BetweenExpr between = 14;
+    ExpressionList list = 15;
+    Literal literal = 16;
+    IfElseExpr if_else = 17;
+    ScalarFn scalar_fn = 18;
+    SubqueryExpr subquery = 19;    // serialization error: internal plan refs
+    InSubqueryExpr in_subquery = 20; // serialization error
+    SubqueryExpr exists = 21;      // serialization error
+    ExpressionList coalesce = 22;
+    VllmExpr vllm = 23;
+  }
+}
+
+message AliasExpr {
+  Expression child = 1;
+  string name = 2;
+}
+
+message BinaryOpExpr {
+  Operator op = 1;
+  Expression left = 2;
+  Expression right = 3;
+}
+
+message CastExpr {
+  Expression child = 1;
+  DataType dtype = 2;
+}
+
+message FillNullExpr {
+  Expression child = 1;
+  Expression value = 2;
+}
+
+message IsInExpr {
+  Expression child = 1;
+  repeated Expression values = 2;
+}
+
+message BetweenExpr {
+  Expression child = 1;
+  Expression lower = 2;
+  Expression upper = 3;
+}
+
+message IfElseExpr {
+  Expression if_true = 1;
+  Expression if_false = 2;
+  Expression predicate = 3;
+}
+
+message ExpressionList {
+  repeated Expression items = 1;
+}
+
+message OverExpr {
+  WindowExpr window_expr = 1;
+  WindowSpec window_spec = 2;
+}
+
+message SubqueryExpr {
+  // Modeled for schema completeness; conversion always errors because the
+  // Rust SubqueryPlan holds non-serializable internal plan references.
+  string unsupported = 1;
+}
+
+message InSubqueryExpr {
+  Expression child = 1;
+  SubqueryExpr subquery = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Columns
+// ---------------------------------------------------------------------------
+
+message Column {
+  oneof column {
+    UnresolvedColumn unresolved = 1;
+    ResolvedColumn resolved = 2;
+    BoundColumn bound = 3;
+  }
+}
+
+message UnresolvedColumn {
+  string name = 1;
+  PlanRef plan_ref = 2;
+  Schema plan_schema = 3;
+}
+
+message BoundColumn {
+  uint64 index = 1;
+  Field field = 2;
+}
+
+message ResolvedColumn {
+  oneof resolved {
+    string basic = 1;
+    JoinSideColumn join_side = 2;
+    OuterRefColumn outer_ref = 3;
+  }
+}
+
+message JoinSideColumn {
+  Field field = 1;
+  JoinSide side = 2;
+}
+
+message OuterRefColumn {
+  Field field = 1;
+  PlanRef plan_ref = 2;
+}
+
+message PlanRef {
+  oneof plan_ref {
+    string alias = 1;
+    bool unqualified = 2;
+    uint64 id = 3;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Aggregations / window functions
+// ---------------------------------------------------------------------------
+
+message AggExpression {
+  oneof agg {
+    CountAgg count = 1;
+    Expression count_distinct = 2;
+    Expression sum = 3;
+    Expression product = 4;
+    ApproxPercentileAgg approx_percentile = 5;
+    Expression approx_count_distinct = 6;
+    SketchAgg approx_sketch = 7;
+    SketchAgg merge_sketch = 8;
+    Expression mean = 9;
+    DdofAgg stddev = 10;
+    DdofAgg var = 11;
+    Expression min = 12;
+    Expression max = 13;
+    Expression bool_and = 14;
+    Expression bool_or = 15;
+    AnyValueAgg any_value = 16;
+    Expression list = 17;
+    Expression set = 18;
+    ConcatAgg concat = 19;
+    Expression skew = 20;
+    MapGroupsAgg map_groups = 21;
+  }
+}
+
+message CountAgg {
+  Expression child = 1;
+  CountMode mode = 2;
+}
+
+message ApproxPercentileAgg {
+  Expression child = 1;
+  repeated double percentiles = 2;
+  bool force_list_output = 3;
+}
+
+message SketchAgg {
+  Expression child = 1;
+  SketchType sketch_type = 2;
+}
+
+message DdofAgg {
+  Expression child = 1;
+  uint64 ddof = 2;
+}
+
+message AnyValueAgg {
+  Expression child = 1;
+  bool ignore_nulls = 2;
+}
+
+message ConcatAgg {
+  Expression child = 1;
+  optional string delimiter = 2;
+}
+
+message MapGroupsAgg {
+  MapGroupsFn func = 1;
+  repeated Expression inputs = 2;
+}
+
+message MapGroupsFn {
+  oneof func {
+    LegacyPythonUdf legacy = 1;
+    PyScalarFn python = 2;
+  }
+}
+
+message WindowExpr {
+  oneof window {
+    AggExpression agg = 1;
+    bool row_number = 2;
+    bool rank = 3;
+    bool dense_rank = 4;
+    WindowOffsetExpr offset = 5;
+  }
+}
+
+message WindowOffsetExpr {
+  Expression input = 1;
+  sint64 offset = 2;
+  Expression default = 3;
+}
+
+message WindowSpec {
+  repeated Expression partition_by = 1;
+  repeated Expression order_by = 2;
+  repeated bool descending = 3;
+  repeated bool nulls_first = 4;
+  WindowFrame frame = 5;
+  uint64 min_periods = 6;
+}
+
+message WindowFrame {
+  WindowBoundary start = 1;
+  WindowBoundary end = 2;
+}
+
+message WindowBoundary {
+  oneof boundary {
+    bool unbounded_preceding = 1;
+    bool unbounded_following = 2;
+    sint64 offset = 3;
+    Literal range_offset = 4;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Scalar functions
+// ---------------------------------------------------------------------------
+
+message FunctionExpr {
+  oneof func {
+    MapExpr map = 1;
+    SketchExpr sketch = 2;
+    StructExpr struct = 3;
+    LegacyPythonUdf python = 4;
+    PartitioningExpr partitioning = 5;
+  }
+  // Function arguments, in declaration order. UDF function expressions may
+  // also carry extra Python-only bound args in `LegacyPythonUdf.bound_args`.
+  repeated Expression inputs = 6;
+}
+
+message MapExpr {
+  // MapExpr::Get carries no payload; the key is a regular function input.
+  bool get = 1;
+}
+
+message SketchExpr {
+  PercentileSketch percentile = 1;
+}
+
+message PercentileSketch {
+  repeated double percentiles = 1;
+  bool force_list_output = 2;
+}
+
+message StructExpr {
+  string get = 1;
+}
+
+message PartitioningExpr {
+  oneof partitioning {
+    bool years = 1;
+    bool months = 2;
+    bool days = 3;
+    bool hours = 4;
+    sint32 iceberg_bucket = 5;
+    sint64 iceberg_truncate = 6;
+  }
+}
+
+message ScalarFn {
+  oneof func {
+    BuiltinScalarFn builtin = 1;
+    PyScalarFn python = 2;
+  }
+}
+
+message BuiltinScalarFn {
+  // Registered name; the receiver rebuilds the concrete UDF from its
+  // FUNCTION_REGISTRY so no function implementation is serialized.
+  string name = 1;
+  repeated FunctionArg args = 2;
+}
+
+message FunctionArg {
+  string name = 1; // empty => unnamed argument
+  Expression arg = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Python UDFs
+// ---------------------------------------------------------------------------
+
+message LegacyPythonUdf {
+  string name = 1;
+  MaybeInitializedUdf func = 2;
+  // Cloudpickle bytes of bound arguments (empty in pure-Rust builds).
+  bytes bound_args = 3;
+  uint64 num_expressions = 4;
+  DataType return_dtype = 5;
+  // bincode-encoded ResourceRequest.
+  bytes resource_request = 6;
+  optional uint64 batch_size = 7;
+  optional uint64 concurrency = 8;
+  optional bool use_process = 9;
+  // Cloudpickle bytes of ray options (empty in pure-Rust builds).
+  bytes ray_options = 10;
+}
+
+message MaybeInitializedUdf {
+  oneof state {
+    bytes initialized = 1;   // cloudpickle
+    UninitializedUdf uninitialized = 2;
+  }
+}
+
+message UninitializedUdf {
+  bytes inner = 1;     // cloudpickle
+  bytes init_args = 2; // cloudpickle
+}
+
+message UdfProperties {
+  string name = 1;
+  bytes resource_request = 2; // bincode ResourceRequest
+  optional uint64 batch_size = 3;
+  optional uint64 concurrency = 4;
+  optional bool use_process = 5;
+  optional uint64 max_retries = 6;
+  bool builtin_name = 7;
+  bool is_async = 8;
+  bool is_scalar = 9;
+  OnError on_error = 10;
+  bytes ray_options = 11; // cloudpickle
+}
+
+message PyScalarFn {
+  oneof func {
+    RowWisePyFn row_wise = 1;
+    BatchPyFn batch = 2;
+  }
+}
+
+message RowWisePyFn {
+  string func_id = 1;
+  string function_name = 2;
+  bytes cls = 3;       // cloudpickle
+  bytes method = 4;    // cloudpickle
+  bool builtin_name = 5;
+  bool is_async = 6;
+  DataType return_dtype = 7;
+  bytes original_args = 8; // cloudpickle
+  repeated Expression args = 9;
+  optional double cpus = 10;
+  double gpus = 11;
+  optional bool use_process = 12;
+  optional uint64 max_concurrency = 13;
+  optional uint64 max_retries = 14;
+  OnError on_error = 15;
+  bytes ray_options = 16; // cloudpickle
+}
+
+message BatchPyFn {
+  string func_id = 1;
+  string function_name = 2;
+  bytes cls = 3;       // cloudpickle
+  bytes method = 4;    // cloudpickle
+  bool builtin_name = 5;
+  bool is_async = 6;
+  DataType return_dtype = 7;
+  optional double cpus = 8;
+  double gpus = 9;
+  optional bool use_process = 10;
+  optional uint64 max_concurrency = 11;
+  optional uint64 batch_size = 12;
+  bytes original_args = 13; // cloudpickle
+  repeated Expression args = 14;
+  optional uint64 max_retries = 15;
+  OnError on_error = 16;
+  bytes ray_options = 17; // cloudpickle
+}
+
+// ---------------------------------------------------------------------------
+// Literals
+// ---------------------------------------------------------------------------
+
+message Literal {
+  oneof lit {
+    bool null = 1;
+    bool boolean = 2;
+    string utf8 = 3;
+    bytes binary = 4;
+    sint32 int8 = 5;
+    uint32 uint8 = 6;
+    sint32 int16 = 7;
+    uint32 uint16 = 8;
+    sint32 int32 = 9;
+    uint32 uint32 = 10;
+    sint64 int64 = 11;
+    uint64 uint64 = 12;
+    TimestampLiteral timestamp = 13;
+    sint32 date = 14;
+    TimeLiteral time = 15;
+    DurationLiteral duration = 16;
+    IntervalValue interval = 17;
+    float float32 = 18;
+    double float64 = 19;
+    DecimalLiteral decimal = 20;
+    bytes list = 21;        // Arrow IPC stream of the Series
+    bytes python = 22;      // cloudpickle (python builds only)
+    FileReference file = 24;
+    TensorLiteral tensor = 25;
+    SparseTensorLiteral sparse_tensor = 26;
+    bytes embedding = 27;   // Arrow IPC stream of the Series
+    MapLiteral map = 28;
+    bytes image = 29;       // bincode-encoded common_image::Image
+    bytes extension = 30;   // Arrow IPC stream of the Series
+  }
+  // Struct literals are kept outside the oneof because protobuf forbids map
+  // fields inside oneofs. An empty map is indistinguishable from an unset map,
+  // so the decoder treats "nothing else set" as an empty struct literal.
+  map<string, Literal> struct = 23;
+}
+
+message TimestampLiteral {
+  sint64 value = 1;
+  TimeUnit time_unit = 2;
+  optional string timezone = 3;
+}
+
+message TimeLiteral {
+  sint64 value = 1;
+  TimeUnit time_unit = 2;
+}
+
+message DurationLiteral {
+  sint64 value = 1;
+  TimeUnit time_unit = 2;
+}
+
+message DecimalLiteral {
+  // i128 split into two 64-bit halves: value = (high << 64) | low.
+  sint64 low = 1;
+  sint64 high = 2;
+  uint32 precision = 3;
+  sint32 scale = 4;
+}
+
+message IntervalValue {
+  sint32 months = 1;
+  sint32 days = 2;
+  sint64 nanoseconds = 3;
+}
+
+message FileReference {
+  MediaType media_type = 1;
+  string url = 2;
+  bytes io_config = 3; // bincode IOConfig
+}
+
+message TensorLiteral {
+  bytes data = 1; // Arrow IPC stream of the Series
+  repeated uint64 shape = 2;
+}
+
+message SparseTensorLiteral {
+  bytes values = 1;  // Arrow IPC stream of the Series
+  bytes indices = 2; // Arrow IPC stream of the Series
+  repeated uint64 shape = 3;
+  bool indices_offset = 4;
+}
+
+message MapLiteral {
+  bytes keys = 1;   // Arrow IPC stream of the Series
+  bytes values = 2; // Arrow IPC stream of the Series
+}
+
+// ---------------------------------------------------------------------------
+// Data types
+// ---------------------------------------------------------------------------
+
+message DataType {
+  oneof dt {
+    bool null = 1;
+    bool boolean = 2;
+    bool int8 = 3;
+    bool int16 = 4;
+    bool int32 = 5;
+    bool int64 = 6;
+    bool uint8 = 7;
+    bool uint16 = 8;
+    bool uint32 = 9;
+    bool uint64 = 10;
+    bool float32 = 11;
+    bool float64 = 12;
+    DecimalType decimal128 = 13;
+    TimestampType timestamp = 14;
+    bool date = 15;
+    TimeUnit time = 16;
+    TimeUnit duration = 17;
+    bool interval = 18;
+    bool binary = 19;
+    uint64 fixed_size_binary = 20;
+    bool utf8 = 21;
+    FixedSizeListType fixed_size_list = 22;
+    DataType list = 23;
+    StructType struct = 24;
+    MapType map = 25;
+    ExtensionType extension = 26;
+    EmbeddingType embedding = 27;
+    ImageType image = 28;
+    FixedShapeImageType fixed_shape_image = 29;
+    DataType tensor = 30;
+    FixedShapeTensorType fixed_shape_tensor = 31;
+    SparseTensorType sparse_tensor = 32;
+    FixedShapeSparseTensorType fixed_shape_sparse_tensor = 33;
+    bool python = 34;
+    bool unknown = 35;
+    MediaType file = 36;
+  }
+}
+
+message DecimalType {
+  uint32 precision = 1;
+  uint32 scale = 2;
+}
+
+message TimestampType {
+  TimeUnit time_unit = 1;
+  optional string timezone = 2;
+}
+
+message FixedSizeListType {
+  DataType dtype = 1;
+  uint64 size = 2;
+}
+
+message StructType {
+  repeated Field fields = 1;
+}
+
+message MapType {
+  DataType key = 1;
+  DataType value = 2;
+}
+
+message ExtensionType {
+  string name = 1;
+  DataType dtype = 2;
+  optional string metadata = 3;
+}
+
+message EmbeddingType {
+  DataType dtype = 1;
+  uint64 size = 2;
+}
+
+message ImageType {
+  optional ImageMode mode = 1;
+}
+
+message FixedShapeImageType {
+  ImageMode mode = 1;
+  uint32 height = 2;
+  uint32 width = 3;
+}
+
+message FixedShapeTensorType {
+  DataType dtype = 1;
+  repeated uint64 shape = 2;
+}
+
+message SparseTensorType {
+  DataType dtype = 1;
+  bool indices_offset = 2;
+}
+
+message FixedShapeSparseTensorType {
+  DataType dtype = 1;
+  repeated uint64 shape = 2;
+  bool indices_offset = 3;
+}
+
+message Field {
+  string name = 1;
+  DataType dtype = 2;
+  map<string, string> metadata = 3;
+}
+
+message Schema {
+  repeated Field fields = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Sources / scans
+// ---------------------------------------------------------------------------
+
+message SourceInfo {
+  oneof source {
+    InMemoryInfo in_memory = 1;
+    PhysicalScanInfo physical = 2;
+    GlobScanInfo glob_scan = 3;
+    PlaceHolderInfo placeholder = 4;
+  }
+}
+
+message InMemoryInfo {
+  Schema source_schema = 1;
+  string cache_key = 2;
+  uint64 num_partitions = 3;
+  uint64 size_bytes = 4;
+  uint64 num_rows = 5;
+  ClusteringSpec clustering_spec = 6;
+  optional uint64 source_stage_id = 7;
+  // cache_entry is always stripped before serialization (None on decode).
+}
+
+message PlaceHolderInfo {
+  Schema source_schema = 1;
+  ClusteringSpec clustering_spec = 2;
+}
+
+message GlobScanInfo {
+  repeated string glob_paths = 1;
+  Schema schema = 2;
+  Pushdowns pushdowns = 3;
+  bytes io_config = 4; // bincode IOConfig
+}
+
+message PhysicalScanInfo {
+  ScanState scan_state = 1;
+  Schema source_schema = 2;
+  repeated PartitionField partitioning_keys = 3;
+  Pushdowns pushdowns = 4;
+}
+
+message ScanState {
+  oneof state {
+    // Operator scan states are materialized into tasks before serialization;
+    // encountering one here is an error.
+    ScanTaskList tasks = 1;
+    bool operator = 2;
+  }
+}
+
+message ScanTaskList {
+  repeated ScanTask tasks = 1;
+}
+
+message ScanTask {
+  repeated ScanSource sources = 1;
+  Schema schema = 2;
+  bytes source_config = 3;  // bincode SourceConfig
+  bytes storage_config = 4; // bincode StorageConfig
+  Pushdowns pushdowns = 5;
+  optional uint64 size_bytes_on_disk = 6;
+  bytes metadata = 7;    // bincode TableMetadata
+  bytes statistics = 8;  // bincode TableStatistics
+  Schema generated_fields = 9;
+}
+
+message ScanSource {
+  optional uint64 size_bytes = 1;
+  bytes metadata = 2;       // bincode TableMetadata
+  bytes statistics = 3;     // bincode TableStatistics
+  bytes partition_spec = 4; // bincode PartitionSpec
+  ScanSourceKind kind = 5;
+}
+
+message ScanSourceKind {
+  oneof kind {
+    FileSource file = 1;
+    DatabaseSource database = 2;
+    PythonFactoryFunction python_factory = 3; // serialization error in pure-Rust builds
+  }
+}
+
+message FileSource {
+  string path = 1;
+  ChunkSpec chunk_spec = 2;
+  repeated string iceberg_delete_files = 3;
+  bytes parquet_metadata = 4; // bincode DaftParquetMetadata
+}
+
+message DatabaseSource {
+  string path = 1;
+}
+
+message PythonFactoryFunction {
+  string module = 1;
+  string func_name = 2;
+  bytes func_args = 3; // bincode PythonTablesFactoryArgs (python builds)
+}
+
+message ChunkSpec {
+  oneof chunk {
+    RepeatedSint64 parquet = 1;
+    ByteRange bytes = 2;
+  }
+}
+
+message RepeatedSint64 {
+  repeated sint64 values = 1;
+}
+
+message ByteRange {
+  uint64 start = 1;
+  uint64 end = 2;
+}
+
+message Pushdowns {
+  Expression filters = 1;
+  Expression partition_filters = 2;
+  StringList columns = 3;
+  optional uint64 limit = 4;
+  Sharder sharder = 5;
+  ExpressionList pushed_filters = 6;
+  Expression aggregation = 7;
+}
+
+message StringList {
+  repeated string values = 1;
+}
+
+message Sharder {
+  ShardingStrategy strategy = 1;
+  uint64 world_size = 2;
+  uint64 rank = 3;
+}
+
+message PartitionField {
+  Field field = 1;
+  Field source_field = 2;
+  PartitionTransform transform = 3;
+}
+
+message PartitionTransform {
+  oneof transform {
+    bool identity = 1;
+    uint64 iceberg_bucket = 2;
+    uint64 iceberg_truncate = 3;
+    bool year = 4;
+    bool month = 5;
+    bool day = 6;
+    bool hour = 7;
+    bool void = 8;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Repartitioning / clustering
+// ---------------------------------------------------------------------------
+
+message RepartitionSpec {
+  oneof spec {
+    HashRepartition hash = 1;
+    RandomRepartition random = 2;
+    RangeRepartition range = 3;
+  }
+}
+
+message HashRepartition {
+  optional uint64 num_partitions = 1;
+  repeated Expression by = 2;
+}
+
+message RandomRepartition {
+  optional uint64 num_partitions = 1;
+  optional uint64 seed = 2;
+}
+
+message RangeRepartition {
+  optional uint64 num_partitions = 1;
+  bytes boundaries = 2; // Arrow IPC stream of the RecordBatch
+  repeated Expression by = 3;
+  repeated bool descending = 4;
+}
+
+message ClusteringSpec {
+  oneof spec {
+    RangeClustering range = 1;
+    HashClustering hash = 2;
+    RandomClustering random = 3;
+    UnknownClustering unknown = 4;
+  }
+}
+
+message RangeClustering {
+  uint64 num_partitions = 1;
+  repeated Expression by = 2;
+  repeated bool descending = 3;
+}
+
+message HashClustering {
+  uint64 num_partitions = 1;
+  repeated Expression by = 2;
+}
+
+message RandomClustering {
+  uint64 num_partitions = 1;
+}
+
+message UnknownClustering {
+  uint64 num_partitions = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Sinks
+// ---------------------------------------------------------------------------
+
+message SinkInfo {
+  oneof sink {
+    OutputFileInfo output_file = 1;
+    // Catalog / data sinks hold Python objects; cloudpickled in Python builds
+    // and unsupported in pure-Rust builds.
+    bytes catalog = 2;
+    bytes data_sink = 3;
+  }
+}
+
+message OutputFileInfo {
+  string root_dir = 1;
+  WriteMode write_mode = 2;
+  FileFormat file_format = 3;
+  FormatSinkOption format_option = 4;
+  ExpressionList partition_cols = 5;
+  optional string compression = 6;
+  bytes io_config = 7; // bincode IOConfig
+  bool write_success_file = 8;
+}
+
+message FormatSinkOption {
+  oneof format {
+    CsvFormatOption csv = 1;
+    JsonFormatOption json = 2;
+    bool parquet = 3;
+  }
+}
+
+message CsvFormatOption {
+  optional uint32 delimiter = 1; // byte value 0-255
+  optional uint32 quote = 2;
+  optional uint32 escape = 3;
+  optional bool header = 4;
+  optional string date_format = 5;
+  optional string timestamp_format = 6;
+}
+
+message JsonFormatOption {
+  optional bool ignore_null_fields = 1;
+  optional string date_format = 2;
+  optional string timestamp_format = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Join support
+// ---------------------------------------------------------------------------
+
+message KeyFilteringConfig {
+  repeated string left_key_columns = 1;
+  repeated string right_key_columns = 2;
+  optional uint64 num_workers = 3;
+  optional double cpus_per_worker = 4;
+  optional uint64 keys_load_batch_size = 5;
+  optional uint64 max_concurrency_per_worker = 6;
+  optional uint64 filter_batch_size = 7;
+}
+
+// ---------------------------------------------------------------------------
+// Stats
+// ---------------------------------------------------------------------------
+
+message StatsState {
+  bool materialized = 1;
+  ApproxStats stats = 2;
+}
+
+message ApproxStats {
+  uint64 num_rows = 1;
+  uint64 size_bytes = 2;
+  double acc_selectivity = 3;
+}
+
+// ---------------------------------------------------------------------------
+// VLLM
+// ---------------------------------------------------------------------------
+
+message VllmExpr {
+  string model = 1;
+  Expression input = 2;
+  uint64 concurrency = 3;
+  uint64 gpus_per_actor = 4;
+  bool do_prefix_routing = 5;
+  uint64 max_buffer_size = 6;
+  uint64 min_bucket_size = 7;
+  double prefix_match_threshold = 8;
+  uint64 load_balance_threshold = 9;
+  optional uint64 batch_size = 10;
+  bytes engine_args = 11;  // cloudpickle
+  bytes generate_args = 12; // cloudpickle
+}
+
+// ---------------------------------------------------------------------------
+// Enumerations
+// ---------------------------------------------------------------------------
+
+enum Operator {
+  OPERATOR_UNSPECIFIED = 0;
+  OPERATOR_EQ = 1;
+  OPERATOR_EQ_NULL_SAFE = 2;
+  OPERATOR_NOT_EQ = 3;
+  OPERATOR_LT = 4;
+  OPERATOR_LT_EQ = 5;
+  OPERATOR_GT = 6;
+  OPERATOR_GT_EQ = 7;
+  OPERATOR_PLUS = 8;
+  OPERATOR_MINUS = 9;
+  OPERATOR_MULTIPLY = 10;
+  OPERATOR_TRUE_DIVIDE = 11;
+  OPERATOR_FLOOR_DIVIDE = 12;
+  OPERATOR_MODULUS = 13;
+  OPERATOR_AND = 14;
+  OPERATOR_OR = 15;
+  OPERATOR_XOR = 16;
+  OPERATOR_SHIFT_LEFT = 17;
+  OPERATOR_SHIFT_RIGHT = 18;
+}
+
+enum JoinType {
+  JOIN_TYPE_UNSPECIFIED = 0;
+  JOIN_TYPE_INNER = 1;
+  JOIN_TYPE_LEFT = 2;
+  JOIN_TYPE_RIGHT = 3;
+  JOIN_TYPE_OUTER = 4;
+  JOIN_TYPE_ANTI = 5;
+  JOIN_TYPE_SEMI = 6;
+}
+
+enum JoinStrategy {
+  JOIN_STRATEGY_UNSPECIFIED = 0;
+  JOIN_STRATEGY_HASH = 1;
+  JOIN_STRATEGY_SORT_MERGE = 2;
+  JOIN_STRATEGY_BROADCAST = 3;
+  JOIN_STRATEGY_CROSS = 4;
+  JOIN_STRATEGY_KEY_FILTERING = 5;
+}
+
+enum JoinSide {
+  JOIN_SIDE_UNSPECIFIED = 0;
+  JOIN_SIDE_LEFT = 1;
+  JOIN_SIDE_RIGHT = 2;
+}
+
+enum CountMode {
+  COUNT_MODE_UNSPECIFIED = 0;
+  COUNT_MODE_ALL = 1;
+  COUNT_MODE_VALID = 2;
+  COUNT_MODE_NULL = 3;
+}
+
+enum SketchType {
+  SKETCH_TYPE_UNSPECIFIED = 0;
+  SKETCH_TYPE_DD_SKETCH = 1;
+  SKETCH_TYPE_HYPER_LOG_LOG = 2;
+}
+
+enum OnError {
+  ON_ERROR_UNSPECIFIED = 0;
+  ON_ERROR_RAISE = 1;
+  ON_ERROR_LOG = 2;
+  ON_ERROR_IGNORE = 3;
+}
+
+enum FileFormat {
+  FILE_FORMAT_UNSPECIFIED = 0;
+  FILE_FORMAT_PARQUET = 1;
+  FILE_FORMAT_CSV = 2;
+  FILE_FORMAT_JSON = 3;
+  FILE_FORMAT_WARC = 4;
+  FILE_FORMAT_TEXT = 5;
+}
+
+enum WriteMode {
+  WRITE_MODE_UNSPECIFIED = 0;
+  WRITE_MODE_OVERWRITE = 1;
+  WRITE_MODE_OVERWRITE_PARTITIONS = 2;
+  WRITE_MODE_APPEND = 3;
+}
+
+enum SetQuantifier {
+  SET_QUANTIFIER_UNSPECIFIED = 0;
+  SET_QUANTIFIER_ALL = 1;
+  SET_QUANTIFIER_DISTINCT = 2;
+}
+
+enum UnionStrategy {
+  UNION_STRATEGY_UNSPECIFIED = 0;
+  UNION_STRATEGY_POSITIONAL = 1;
+  UNION_STRATEGY_BY_NAME = 2;
+}
+
+enum ShardingStrategy {
+  SHARDING_STRATEGY_UNSPECIFIED = 0;
+  SHARDING_STRATEGY_FILE = 1;
+}
+
+enum TimeUnit {
+  TIME_UNIT_UNSPECIFIED = 0;
+  TIME_UNIT_NANOSECONDS = 1;
+  TIME_UNIT_MICROSECONDS = 2;
+  TIME_UNIT_MILLISECONDS = 3;
+  TIME_UNIT_SECONDS = 4;
+}
+
+enum ImageMode {
+  IMAGE_MODE_UNSPECIFIED = 0;
+  IMAGE_MODE_L = 1;
+  IMAGE_MODE_LA = 2;
+  IMAGE_MODE_RGB = 3;
+  IMAGE_MODE_RGBA = 4;
+  IMAGE_MODE_L16 = 5;
+  IMAGE_MODE_LA16 = 6;
+  IMAGE_MODE_RGB16 = 7;
+  IMAGE_MODE_RGBA16 = 8;
+  IMAGE_MODE_RGB32F = 9;
+  IMAGE_MODE_RGBA32F = 10;
+}
+
+enum MediaType {
+  MEDIA_TYPE_UNSPECIFIED = 0;
+  MEDIA_TYPE_UNKNOWN = 1;
+  MEDIA_TYPE_VIDEO = 2;
+  MEDIA_TYPE_AUDIO = 3;
+}

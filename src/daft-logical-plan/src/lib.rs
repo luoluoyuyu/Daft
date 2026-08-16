@@ -6,10 +6,13 @@ pub mod logical_plan;
 pub mod ops;
 pub mod optimization;
 pub mod partitioning;
+pub mod proto;
 pub mod scan_builder;
 pub mod sink_info;
 pub mod source_info;
 pub mod stats;
+pub mod transport;
+pub mod udf;
 #[cfg(test)]
 mod test;
 mod treenode;

@@ -278,7 +278,25 @@ pub fn get_context() -> DaftContext {
 
 #[cfg(not(feature = "python"))]
 pub fn get_context() -> DaftContext {
-    unimplemented!()
+    match DAFT_CONTEXT.get() {
+        Some(ctx) => ctx.clone(),
+        None => {
+            let state = ContextState {
+                config: Config::from_env(),
+                // A headless (non-Python) runtime has no subscribers (e.g. no
+                // dashboard sink); keep the context minimal.
+                subscribers: HashMap::new(),
+            };
+            let state = RwLock::new(state);
+            let state = Arc::new(state);
+            let ctx = DaftContext { state };
+
+            DAFT_CONTEXT
+                .set(ctx.clone())
+                .expect("Failed to set DaftContext");
+            ctx
+        }
+    }
 }
 
 #[cfg(feature = "python")]

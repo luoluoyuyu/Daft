@@ -1,0 +1,105 @@
+syntax = "proto3";
+
+package daft.v1;
+
+option java_package = "com.daft.protocol.v1";
+option java_outer_classname = "UdfProto";
+option go_package = "daft/v1";
+
+// ---------------------------------------------------------------------------
+// Parsed Python UDF descriptors.
+//
+// A ``UdfDescriptor`` is the *result* of UDF parsing. It is produced by the
+// Python client while the interpreter that built the plan is available, and
+// is the only thing the Rust runtime knows about a Python UDF: the runtime
+// never re-parses the logical plan to discover UDFs, never unpickles code,
+// and never inspects cloudpickle payloads. It forwards these descriptors
+// verbatim to the dedicated Python UDF worker, which initializes the UDF
+// (unpickling ``code`` / ``method`` / ``init_args``) and then invokes it.
+//
+// Presence of descriptors on a job is the complete declaration that the job
+// requires a Python UDF worker: a plan with an empty ``udfs`` list is
+// executed entirely by the pure-Rust engine.
+// ---------------------------------------------------------------------------
+
+// Execution flavour of a Python UDF.
+enum UdfKind {
+  UDF_KIND_UNSPECIFIED = 0;
+  // Scalar UDF applied row-by-row (@daft.func over rows).
+  UDF_KIND_SCALAR_ROW_WISE = 1;
+  // Batch UDF applied to a whole column of values at once (@daft.func batch).
+  UDF_KIND_SCALAR_BATCH = 2;
+  // Group aggregation UDF (``groupby(...).agg(func)`` / ``map_groups``).
+  UDF_KIND_MAP_GROUPS = 3;
+  // Legacy ``@daft.udf`` expressions (row-wise or batch over legacy API).
+  UDF_KIND_LEGACY = 4;
+  // VLLM expression, executed through the Python worker service.
+  UDF_KIND_VLLM = 5;
+}
+
+// Error-handling behaviour declared by the UDF, mirroring plan.proto OnError.
+enum UdfOnError {
+  UDF_ON_ERROR_UNSPECIFIED = 0;
+  UDF_ON_ERROR_RAISE = 1;
+  UDF_ON_ERROR_LOG = 2;
+  UDF_ON_ERROR_IGNORE = 3;
+}
+
+// Self-contained description of one Python UDF.
+//
+// Every field that the Python client can extract while building the plan is
+// populated here: identity (``udf_id``/``name``), kind, parsed return/input
+// types, the executable cloudpickle payloads, and execution properties. The
+// Rust runtime treats the bytes fields as opaque and only the Python worker
+// unpickles them.
+message UdfDescriptor {
+  // Stable identity of the UDF: ``func_id`` for ``@daft.func``/``@daft.cls``
+  // UDFs, the registered name for legacy ``@daft.udf`` UDFs.
+  string udf_id = 1;
+  UdfKind kind = 2;
+  // User-facing function name (function_name / name).
+  string name = 3;
+  // Serialized ``daft.v1.DataType`` of the UDF return value (plan.proto).
+  bytes return_dtype = 4;
+  // Number of input expressions the UDF consumes.
+  uint64 num_inputs = 5;
+  // Serialized ``daft.v1.DataType`` per input, when the client can resolve
+  // them from the plan schema. May be empty when the dtypes are only known
+  // after expression binding.
+  repeated bytes input_dtypes = 6;
+  // Cloudpickle payload of the executable callable: for @daft.func/@daft.cls
+  // this is the class; for legacy UDFs this is the function object (or the
+  // initialized object when already initialized).
+  bytes code = 7;
+  // Cloudpickle payload of the class method to invoke (scalar func/cls UDFs).
+  bytes method = 8;
+  // Cloudpickle payload of legacy init arguments (uninitialized UDFs).
+  bytes init_args = 9;
+  // Cloudpickle payload of legacy bound arguments.
+  bytes bound_args = 10;
+  // Cloudpickle payload of original bound arguments (scalar func/cls UDFs).
+  bytes original_args = 11;
+  optional uint64 batch_size = 12;
+  optional uint64 concurrency = 13;
+  optional bool use_process = 14;
+  optional uint64 max_retries = 15;
+  optional uint64 max_concurrency = 16;
+  bool builtin_name = 17;
+  bool is_async = 18;
+  bool is_scalar = 19;
+  UdfOnError on_error = 20;
+  // bincode-encoded ResourceRequest (opaque to the Python client).
+  bytes resource_request = 21;
+  // Cloudpickle payload of ray options (opaque to the Python client).
+  bytes ray_options = 22;
+  // Interpreter version the plan was built against (e.g. "3.11.9").
+  string python_version = 23;
+  // Parsed input expression names, when available from the plan.
+  repeated string arg_names = 24;
+  // VLLM execution properties (UDF_KIND_VLLM only).
+  string model = 25;
+  // Cloudpickle payload of the VLLM engine constructor kwargs.
+  bytes engine_args = 26;
+  // Cloudpickle payload of the VLLM generate() kwargs.
+  bytes generate_args = 27;
+}

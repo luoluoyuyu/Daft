@@ -1,0 +1,106 @@
+syntax = "proto3";
+
+package daft.v1;
+
+option java_package = "com.daft.protocol.v1";
+option java_outer_classname = "WorkerProto";
+option go_package = "daft/v1";
+
+import "daft/v1/udf.proto";
+
+// ---------------------------------------------------------------------------
+// Daft runtime <-> Python UDF worker subprocess channel.
+//
+// The Rust ``daft-runtime`` binary never embeds CPython. UDF plans are
+// executed by a single long-lived ``python -m daft.runtime.worker`` process
+// that the server manages (spawn, handshake, health checks, crash restart).
+// The worker receives the *parsed* UDF descriptors from the client (via the
+// server) so it never has to parse the plan itself to learn what UDFs it
+// must run; it initializes each descriptor and executes the plan.
+// Every message in each direction is framed by a 4-byte little-endian length
+// prefix::
+//
+//   u32 LE length || protobuf bytes
+//
+// The worker writes a ``WorkerEnvelope`` to stdout as its first message
+// (``hello`` handshake), then one ``WorkerEnvelope``/``WorkerResponse`` per
+// ``WorkerRequest`` received on stdin. The server never embeds CPython; the
+// worker process is the only place where cloudpickled UDFs are unpickled.
+// ---------------------------------------------------------------------------
+
+// Every message the worker writes to stdout.
+message WorkerEnvelope {
+  oneof payload {
+    WorkerHello hello = 1;
+    WorkerResponse response = 2;
+  }
+}
+
+// Handshake written by the worker immediately after startup so the server can
+// verify the interpreter and package versions before dispatching work.
+message WorkerHello {
+  int64 pid = 1;
+  string python_version = 2;
+  string daft_version = 3;
+}
+
+// Request written to the worker's stdin.
+message WorkerRequest {
+  // Echoed back by WorkerResponse so the server can correlate replies on a
+  // multiplexed pipe and discard stale frames.
+  uint64 request_id = 1;
+  oneof command {
+    ExecutePlanRequest execute = 2;
+    Ping ping = 3;
+    Shutdown shutdown = 4;
+  }
+}
+
+// Execute one serialized logical plan and return the DAFTRES1 IPC envelope.
+message ExecutePlanRequest {
+  // Opaque serialized logical plan (same bytes as JobSubmitRequest.logical_plan).
+  bytes logical_plan = 1;
+  // In-memory partition sets keyed by cache key (same framing as
+  // JobSubmitRequest.partition_sets).
+  map<string, bytes> partition_sets = 2;
+  // Directories (e.g. materialized UDF artifacts) to prepend to sys.path.
+  repeated string extra_paths = 3;
+  // Parsed UDF descriptors (same messages as JobSubmitRequest.udfs). The
+  // worker validates/initializes these before executing the plan; it does
+  // not re-parse the plan to discover UDFs.
+  repeated UdfDescriptor udfs = 4;
+  // Interpreter version the plan was built against; verified against the
+  // worker's own interpreter.
+  string python_version = 5;
+}
+
+// Health probe; the worker answers with Pong without touching any state.
+message Ping {}
+
+// Graceful stop request; the worker answers with ShutdownAck and exits.
+message Shutdown {}
+
+// Response written to the worker's stdout.
+message WorkerResponse {
+  // Matches the request_id of the WorkerRequest being answered.
+  uint64 request_id = 1;
+  oneof result {
+    ExecutePlanResponse execute = 2;
+    Pong pong = 3;
+    ShutdownAck shutdown = 4;
+  }
+}
+
+// Outcome of an ExecutePlanRequest. Exactly one of result/error is set.
+message ExecutePlanResponse {
+  // DAFTRES1 IPC envelope, present on success.
+  bytes result = 1;
+  // Error message, present on failure.
+  string error = 2;
+}
+
+// Answer to Ping.
+message Pong {}
+
+// Answer to Shutdown.
+message ShutdownAck {}

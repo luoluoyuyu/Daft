@@ -208,10 +208,12 @@ members = [
   "src/daft-io",
   "src/daft-json",
   "src/daft-local-execution",
+  "src/daft-runtime",
   "src/daft-local-plan",
   "src/daft-logical-plan",
   "src/daft-micropartition",
   "src/daft-parquet",
+  "src/daft-protocol",
   "src/daft-runners",
   "src/daft-scan",
   "src/daft-session",
@@ -325,6 +327,7 @@ path_macro = "1.0.0"
 pretty_assertions = "1.4.1"
 proptest = "1.9.0"
 prost = "0.13.5"
+prost-build = "0.13.5"
 prost-types = "0.13.5"
 rand = "^0.9"
 rayon = "1.11.0"

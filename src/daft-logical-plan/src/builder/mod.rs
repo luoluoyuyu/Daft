@@ -168,6 +168,43 @@ impl LogicalPlanBuilder {
         Self::new(plan.into(), self.config.clone())
     }
 
+    /// Deserialize a logical plan previously produced by [`LogicalPlanBuilder::to_bytes`].
+    pub fn from_bytes(bytes: &[u8]) -> DaftResult<Self> {
+        let proto_plan = daft_protocol::decode::<daft_protocol::daft::v1::LogicalPlan>(bytes)
+            .map_err(|e| DaftError::ValueError(format!("failed to decode logical plan protobuf: {e}")))?;
+        let plan = crate::proto::plan_from_proto(proto_plan).map_err(|e| {
+            DaftError::ValueError(format!("failed to deserialize logical plan: {e}"))
+        })?;
+        Ok(Self::new(plan, None))
+    }
+
+    /// Serialize the plan into a self-contained protobuf payload.
+    ///
+    /// Physical scan operators are materialized into serializable scan tasks
+    /// before encoding, so that plans with file scans can be transported to a
+    /// remote executor (e.g. the daft-runtime server) without needing the
+    /// original scan operator handles.
+    pub fn to_bytes(&self) -> DaftResult<Vec<u8>> {
+        use crate::optimization::rules::{MaterializeScans, OptimizerRule};
+
+        let plan = MaterializeScans::new()
+            .try_optimize(self.plan.clone())
+            .map_err(|e| DaftError::ValueError(format!("failed to materialize scans: {e}")))?
+            .data;
+        let plan = crate::transport::strip_partition_cache_entries(plan).map_err(|e| {
+            DaftError::ValueError(format!("failed to strip partition cache entries: {e}"))
+        })?;
+        let proto_plan = crate::proto::plan_to_proto(&plan)
+            .map_err(|e| DaftError::ValueError(format!("failed to serialize logical plan: {e}")))?;
+        Ok(daft_protocol::encode(&proto_plan))
+    }
+
+    /// Returns true if the plan contains any Python UDF that requires an
+    /// interpreter to execute.
+    pub fn contains_python_udf(&self) -> bool {
+        crate::udf::plan_contains_python_udf(&self.plan)
+    }
+
     /// Parametrize the LogicalPlanBuilder with a DaftPlanningConfig
     pub fn with_config(&self, config: Arc<DaftPlanningConfig>) -> Self {
         Self::new(self.plan.clone(), Some(config))
@@ -1230,6 +1267,23 @@ fn pyexprs_to_exprs(vec: Vec<PyExpr>) -> Vec<ExprRef> {
 #[pymethods]
 impl PyLogicalPlanBuilder {
     #[staticmethod]
+    pub fn from_bytes(bytes: &[u8]) -> PyResult<Self> {
+        let builder = LogicalPlanBuilder::from_bytes(bytes)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        Ok(Self::new(builder))
+    }
+
+    pub fn to_bytes(&self) -> PyResult<Vec<u8>> {
+        self.builder
+            .to_bytes()
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+    }
+
+    pub fn contains_python_udf(&self) -> bool {
+        self.builder.contains_python_udf()
+    }
+
+    #[staticmethod]
     pub fn in_memory_scan(
         partition_key: &str,
         cache_entry: pyo3::Py<pyo3::PyAny>,
@@ -1810,6 +1864,13 @@ mod tests {
             .expect("builder compilation should succeed");
 
         assert_eq!(compiled.unoptimized_builder(), builder);
-        assert_eq!(compiled.optimized_builder(), optimized);
+        // ScanState equality is pointer-based (see daft-scan::ScanState), so
+        // two independently optimized plans with identical structure compare
+        // unequal with `==`. Compare their Debug representations instead, which
+        // captures the intent of "compile matches the existing optimize path".
+        assert_eq!(
+            format!("{:?}", compiled.optimized_builder().plan),
+            format!("{:?}", optimized.plan)
+        );
     }
 }

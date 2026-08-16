@@ -29,9 +29,18 @@ use common_runtime::{JoinSet, RuntimeRef, RuntimeTask};
 use console::style;
 use resource_manager::MemoryManager;
 pub use run::ExecutionEngineResult;
+pub use run::NativeExecutor;
 use runtime_stats::RuntimeStatsManagerHandle;
 use snafu::{ResultExt, Snafu, futures::TryFutureExt};
 use tracing::Instrument;
+
+/// Block on a future using the crate-global tokio runtime.
+///
+/// Safe to call from non-tokio threads (e.g. daft-runtime's job threads);
+/// the global runtime keeps its own worker threads alive for the process.
+pub fn block_on_global<F: Future>(future: F) -> F::Output {
+    run::get_global_runtime().block_on(future)
+}
 
 /// The `OperatorOutput` enum represents the output of an operator.
 /// It can be either `Ready` or `Pending`.

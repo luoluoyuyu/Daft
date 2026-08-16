@@ -1,0 +1,22 @@
+[package]
+name = "daft-runtime"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+axum = "0.8"
+common-daft-config = {path = "../common/daft-config", default-features = false}
+common-error = {path = "../common/error", default-features = false}
+daft-context = {path = "../daft-context", default-features = false}
+daft-local-execution = {path = "../daft-local-execution", default-features = false}
+daft-local-plan = {path = "../daft-local-plan", default-features = false}
+daft-logical-plan = {path = "../daft-logical-plan", default-features = false}
+daft-micropartition = {path = "../daft-micropartition", default-features = false}
+daft-protocol = {path = "../daft-protocol"}
+prost = {workspace = true}
+sha2 = "0.10"
+tokio = {workspace = true, features = ["macros", "rt-multi-thread", "sync"]}
+uuid = {workspace = true, features = ["v4", "serde"]}
+
+[lints]
+workspace = true

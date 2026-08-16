@@ -11,6 +11,8 @@ if TYPE_CHECKING:
     from daft.runners.runner import Runner
     from daft.runners.partitioning import PartitionT
 
+_REMOTE_RUNNER: Runner[PartitionT] | None = None
+
 
 def _get_runner() -> Runner[PartitionT] | None:
     """Internal testing function to check the currently set runner."""
@@ -31,7 +33,25 @@ def get_or_create_runner() -> Runner[PartitionT]:
         lifetime of the process. Use ``get_or_infer_runner_type`` to check the
         runner type without this side effect.
     """
+    if _REMOTE_RUNNER is not None:
+        return _REMOTE_RUNNER
     return _get_or_create_runner()
+
+
+def set_runner_remote(endpoint: str, *, token: str | None = None) -> Runner[PartitionT]:
+    """Route all materializing operations to a standalone Daft runtime."""
+    global _REMOTE_RUNNER
+    if _REMOTE_RUNNER is not None:
+        return _REMOTE_RUNNER
+    from daft.runtime.runner import RemoteRunner
+
+    _REMOTE_RUNNER = RemoteRunner(endpoint, token=token)
+    return _REMOTE_RUNNER
+
+
+def _reset_remote_runner_for_testing() -> None:
+    global _REMOTE_RUNNER
+    _REMOTE_RUNNER = None
 
 
 def get_or_infer_runner_type() -> str:

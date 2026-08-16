@@ -54,7 +54,7 @@ static GLOBAL_RUNTIME: OnceLock<Handle> = OnceLock::new();
 
 /// Get or initialize the global tokio runtime
 #[cfg(feature = "python")]
-fn get_global_runtime() -> &'static Handle {
+pub(crate) fn get_global_runtime() -> &'static Handle {
     GLOBAL_RUNTIME.get_or_init(|| {
         let mut builder = tokio::runtime::Builder::new_current_thread();
         builder.enable_all();
@@ -67,8 +67,21 @@ fn get_global_runtime() -> &'static Handle {
 }
 
 #[cfg(not(feature = "python"))]
-fn get_global_runtime() -> &'static Handle {
-    unimplemented!("get_global_runtime is not implemented without python feature");
+pub(crate) fn get_global_runtime() -> &'static Handle {
+    GLOBAL_RUNTIME.get_or_init(|| {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("failed to build daft-local-execution global runtime");
+        let handle = runtime.handle().clone();
+        // Keep the runtime alive on a dedicated thread; `Handle` clones allow
+        // spawning and blocking from any other thread (e.g. the daft-runtime
+        // job threads).
+        std::thread::spawn(move || {
+            runtime.block_on(futures::future::pending::<()>());
+        });
+        handle
+    })
 }
 
 /// Message sent to the execution task to enqueue inputs
@@ -354,7 +367,7 @@ async fn run_execution_loop(
     result
 }
 
-pub(crate) struct NativeExecutor {
+pub struct NativeExecutor {
     cancel: CancellationToken,
     is_flotilla_worker: bool,
     shuffle_server: Option<Arc<ShuffleFlightServer>>,
@@ -594,7 +607,13 @@ impl ExecutionEngineResult {
         None
     }
 
-    async fn into_shuffle_metadata(mut self) -> Option<ShuffleMetadata> {
+    /// Poll the next output partition, awaiting the pipeline as needed.
+    pub async fn next_partition(&mut self) -> Option<MicroPartition> {
+        self.next().await
+    }
+
+    /// Drain the remaining results, returning shuffle metadata if any.
+    pub async fn into_shuffle_metadata(mut self) -> Option<ShuffleMetadata> {
         while let Some(item) = self.receiver.recv().await {
             if let ExecutionEngineResultItem::ShuffleMetadata(metadata) = item {
                 self.shuffle_metadata = Some(metadata);

@@ -149,13 +149,8 @@ from daft.io import (
     read_huggingface,
     read_mcap,
 )
-from daft.plan_transport import (
-    deserialize_plan,
-    execute_from_bytes,
-    execute_plan,
-    serialize_plan,
-)
 from daft.runners import get_or_create_runner, get_or_infer_runner_type, set_runner_native, set_runner_ray
+from daft.runtime import Job, RuntimeClient, connect
 from daft.sql import sql, sql_expr
 from daft.viz import register_viz_hook
 from daft.window import Window
@@ -226,13 +221,10 @@ __all__ = [
     "detach_function",
     "detach_provider",
     "detach_subscriber",
-    "deserialize_plan",
     "detach_table",
     "drop_namespace",
     "drop_table",
     "element",
-    "execute_from_bytes",
-    "execute_plan",
     "execution_config_ctx",
     "from_arrow",
     "from_dask_dataframe",
@@ -284,7 +276,6 @@ __all__ = [
     "refresh_logger",
     "register_viz_hook",
     "runners",
-    "serialize_plan",
     "session",
     "set_catalog",
     "set_execution_config",

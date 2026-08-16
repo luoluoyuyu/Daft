@@ -409,6 +409,9 @@ class PartitionSetCache:
 
     def put_partition_set(self, pset: PartitionSet[Any]) -> PartitionCacheEntry:
         pset_id = uuid4().hex
+        return self.put_partition_set_with_key(pset_id, pset)
+
+    def put_partition_set_with_key(self, pset_id: str, pset: PartitionSet[Any]) -> PartitionCacheEntry:
         part_entry = PartitionCacheEntry(pset_id, pset)
         with self._lock:
             self.__uuid_to_partition_set[pset_id] = part_entry

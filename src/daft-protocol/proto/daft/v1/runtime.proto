@@ -1,0 +1,150 @@
+syntax = "proto3";
+
+package daft.v1;
+
+option java_package = "com.daft.protocol.v1";
+option java_outer_classname = "RuntimeProto";
+option go_package = "daft/v1";
+
+import "daft/v1/udf.proto";
+
+// ---------------------------------------------------------------------------
+// Daft standalone runtime control plane.
+//
+// This is the wire protocol between a Daft Python client and the
+// ``daft-runtime`` execution server. Every HTTP message in this protocol is
+// encoded as a length-delimited protobuf payload (``application/x-protobuf``);
+// JSON is never used on the wire.
+// ---------------------------------------------------------------------------
+
+// Lifecycle state of a submitted job.
+enum JobState {
+  JOB_STATE_UNSPECIFIED = 0;
+  JOB_STATE_PENDING = 1;
+  JOB_STATE_RUNNING = 2;
+  JOB_STATE_SUCCEEDED = 3;
+  JOB_STATE_FAILED = 4;
+  JOB_STATE_CANCELED = 5;
+}
+
+// Submission payload for POST /v1/jobs.
+message JobSubmitRequest {
+  // Opaque serialized logical plan. Produced by
+  // ``LogicalPlanBuilder.to_bytes()`` as protobuf (``plan.proto``). Python
+  // UDF closures are embedded as opaque cloudpickle bytes inside the plan;
+  // the runtime treats this field as opaque and never parses it.
+  bytes logical_plan = 2;
+
+  // In-memory partition sets keyed by the partition-set cache key of the
+  // submitting process. Each value is an Arrow IPC blob with the framing
+  // ``u32 LE count`` followed by per-partition ``u64 LE length`` + IPC stream.
+  map<string, bytes> partition_sets = 3;
+
+  // Parsed Python UDF descriptors, computed by the Python client while the
+  // interpreter is available. This is the complete UDF declaration: the
+  // runtime never re-parses ``logical_plan`` to discover UDFs. An empty list
+  // means the plan contains no Python UDFs and is executed entirely by the
+  // pure-Rust engine.
+  repeated UdfDescriptor udfs = 4;
+
+  // Content-addressed UDF artifacts this job depends on (see
+  // ``UploadUdfArtifactRequest``). Artifacts are staged on the server before
+  // the job executes and their directories are added to the worker's
+  // ``sys.path`` so the executable Python code can be imported.
+  repeated string udf_artifact_ids = 5;
+
+  // Interpreter version the plan was built against (e.g. "3.11.9"). The
+  // server verifies it against the version reported by the worker's
+  // handshake and fails the job on mismatch.
+  string python_version = 6;
+}
+
+// Response to POST /v1/jobs. The job runs asynchronously; poll
+// GET /v1/jobs/{job_id} for the resulting JobStatus.
+message JobSubmitResponse {
+  string job_id = 1;
+}
+
+// Job status returned by GET/DELETE /v1/jobs/{job_id}.
+message JobStatus {
+  string job_id = 1;
+  JobState state = 2;
+  // Human-readable error, set only when state == JOB_STATE_FAILED.
+  string error = 3;
+}
+
+// Result body returned by GET /v1/jobs/{id}/result on success.
+//
+// ``payload`` is the ``DAFTRES1`` Arrow IPC envelope: 8-byte magic
+// ``b"DAFTRES1"``, ``u32 LE`` partition count, then per partition
+// ``u64 LE`` stream length followed by the Arrow IPC stream. The envelope
+// itself is a binary payload; protobuf is the wire framing around it so every
+// control-plane response speaks the same protocol.
+message JobResult {
+  bytes payload = 1;
+}
+
+// Runtime used to execute a UDF artifact.
+enum UdfRuntime {
+  UDF_RUNTIME_UNSPECIFIED = 0;
+  UDF_RUNTIME_PYTHON = 1;
+}
+
+// Metadata for a content-addressed UDF artifact.
+message UdfArtifactMetadata {
+  // Server-assigned content address, e.g. "sha256:...". Computed by the server
+  // from the payload; ignored in upload requests.
+  string artifact_id = 1;
+  UdfRuntime runtime = 2;
+  // Module path or entrypoint used to load the artifact.
+  string entrypoint = 3;
+  // Interpreter version the artifact was built against, when known.
+  string python_version = 4;
+  repeated string requirements = 5;
+  uint64 size_bytes = 6;
+  // SHA-256 of the payload, hex-encoded.
+  string sha256 = 7;
+  // Preferred basename for the materialized file, e.g. "my_udf_mod.py" or
+  // "bundle.zip". The runtime writes the payload to this name inside a
+  // per-job staging directory that is prepended to the Python worker's
+  // sys.path, so the artifact must be importable by that name (a module,
+  // package directory archive, or wheel). When empty, the server derives a
+  // name from ``entrypoint`` ("module:function" -> "module.py").
+  string filename = 8;
+}
+
+// Upload payload for POST /v1/udf-artifacts.
+message UploadUdfArtifactRequest {
+  UdfArtifactMetadata metadata = 1;
+  bytes payload = 2;
+}
+
+// Response to POST /v1/udf-artifacts.
+message UploadUdfArtifactResponse {
+  UdfArtifactMetadata metadata = 1;
+}
+
+// Artifact returned by GET /v1/udf-artifacts/{id}[/payload].
+message UdfArtifact {
+  UdfArtifactMetadata metadata = 1;
+  bytes payload = 2;
+}
+
+// Structured error body. HTTP-level errors also carry a plain-text body;
+// this message is used where a typed error is useful (e.g. worker failures).
+message Error {
+  string message = 1;
+}
+
+// Worker registration payload (reserved for future distributed execution).
+message WorkerInfo {
+  string worker_id = 1;
+  string address = 2;
+  double cpu_capacity = 3;
+  uint64 memory_bytes = 4;
+}
+
+// Response to GET /v1/workers.
+message WorkerList {
+  repeated WorkerInfo workers = 1;
+}

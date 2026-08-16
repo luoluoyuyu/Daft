@@ -37,7 +37,6 @@ from daft.errors import ExpressionTypeError
 from daft.execution.native_executor import NativeExecutor
 from daft.expressions import Expression, ExpressionsProjection, col, lit
 from daft.logical.builder import LogicalPlanBuilder
-from daft.plan_transport import deserialize_plan, serialize_plan
 from daft.recordbatch import MicroPartition, RecordBatch
 from daft.runners import get_or_create_runner
 from daft.runners.partitioning import (
@@ -71,6 +70,7 @@ if TYPE_CHECKING:
     from daft.io import DataSink
     from daft.io.lance.rest_config import LanceRestConfig
     from daft.io.sink import WriteResultType
+    from daft.runtime import Job
 
 from daft.schema import Schema
 
@@ -330,28 +330,11 @@ class DataFrame:
         return None
 
     @DataframePublicAPI
-    def to_plan_bytes(self) -> bytes:
-        """Serialize this lazy DataFrame plan for execution in another process.
+    def submit(self) -> "Job":
+        """Submit this lazy DataFrame to the configured standalone runtime."""
+        from daft.runtime.runner import submit
 
-        Does not run the query. Pair with :meth:`from_plan_bytes` on a runtime worker.
-
-        Returns:
-            bytes: Cloudpickle payload containing the logical plan builder state.
-        """
-        return serialize_plan(self)
-
-    @classmethod
-    @DataframePublicAPI
-    def from_plan_bytes(cls, plan_bytes: bytes) -> "DataFrame":
-        """Restore a lazy DataFrame from :meth:`to_plan_bytes` output.
-
-        Args:
-            plan_bytes: Bytes produced by :meth:`to_plan_bytes` or :func:`daft.serialize_plan`.
-
-        Returns:
-            DataFrame: Lazy DataFrame ready for ``collect()`` or other materializing ops.
-        """
-        return deserialize_plan(plan_bytes)
+        return submit(self)
 
     def num_partitions(self) -> int | None:
         """Returns the number of partitions that will be used to execute this DataFrame.
@@ -4781,7 +4764,8 @@ class DataFrame:
             result = self._result
             assert result is not None
             result.wait()
-            self._metadata.write_mermaid()
+            if self._metadata is not None:
+                self._metadata.write_mermaid()
 
     @DataframePublicAPI
     def collect(self, num_preview_rows: int | None = 8) -> "DataFrame":

@@ -5,6 +5,8 @@ use daft_schema::{field::Field, schema::Schema};
 
 use crate::builder::LogicalPlanBuilder;
 
+mod proto_roundtrip;
+
 /// Create a dummy scan node containing the provided fields in its schema and the provided limit.
 pub fn dummy_scan_operator(fields: Vec<Field>) -> ScanOperatorRef {
     dummy_scan_operator_with_size(fields, None)
