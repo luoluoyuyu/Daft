@@ -12,7 +12,8 @@ use daft_core::prelude::*;
 use daft_dsl::{
     Column, Expr, ExprRef, PlanRef, Subquery, UnresolvedColumn,
     functions::{FunctionExpr, ScalarUDF, scalar::ScalarFn, struct_::StructExpr},
-    has_agg, lit, null_lit, resolved_col, unresolved_col,
+    common_treenode::{Transformed, TreeNode, TreeNodeRecursion},
+    has_agg, has_window, lit, null_lit, resolved_col, unresolved_col,
 };
 use daft_functions::{
     invalid_argument_err,
@@ -586,15 +587,47 @@ impl SQLPlanner<'_> {
         projections: Vec<Arc<Expr>>,
         order_by: Option<OrderByExprs>,
     ) -> Result<(), PlannerError> {
-        if let Some(OrderByExprs {
+        let Some(OrderByExprs {
             exprs,
             descending,
             nulls_first,
         }) = order_by
-        {
+        else {
+            self.update_plan(|plan| plan.select(projections))?;
+            return Ok(());
+        };
+
+        // Window expressions must be materialized by a Window operator before
+        // any Sort that references their output. When the projection contains
+        // window functions, apply the projection first, then sort, rewriting
+        // ORDER BY references to projection outputs into plain column
+        // references against the projected schema (e.g. `ORDER BY rn` where
+        // `rn` is an alias for a window function).
+        if projections.iter().any(has_window) {
+            let projected_outputs = projections
+                .iter()
+                .flat_map(|p| {
+                    let mut entries = vec![(p.clone(), p.name().to_string())];
+                    if let Expr::Alias(inner, name) = p.as_ref() {
+                        entries.push((inner.clone(), name.to_string()));
+                    }
+                    entries
+                })
+                .collect::<HashMap<ExprRef, String>>();
+
+            let exprs = exprs
+                .into_iter()
+                .map(|e| rewrite_to_projected_outputs(e, &projected_outputs))
+                .collect::<DaftResult<Vec<_>>>()?;
+
+            self.update_plan(|plan| plan.select(projections))?;
             self.update_plan(|plan| plan.sort(exprs, descending, nulls_first))?;
+            return Ok(());
         }
 
+        // Non-window queries sort against the input schema first, which also
+        // allows ORDER BY to reference columns that are not in the SELECT list.
+        self.update_plan(|plan| plan.sort(exprs, descending, nulls_first))?;
         self.update_plan(|plan| plan.select(projections))?;
 
         Ok(())
@@ -2020,6 +2053,31 @@ fn derived_ast(expr: &ast::Expr) -> Option<&ast::Expr> {
     } else {
         Some(expr)
     }
+}
+
+/// Rewrites an ORDER BY expression so that any subtree that matches a SELECT
+/// projection (either the full projection or the inner expression of an alias)
+/// becomes a plain `resolved_col` reference to the projection's output column.
+///
+/// This is used after a projection is applied: the rewritten expression must be
+/// resolvable against the projected schema (e.g. `ORDER BY rn` where `rn` is an
+/// alias for `ROW_NUMBER() OVER (...)` becomes `ORDER BY resolved_col("rn")`).
+fn rewrite_to_projected_outputs(
+    expr: ExprRef,
+    projected_outputs: &HashMap<ExprRef, String>,
+) -> DaftResult<ExprRef> {
+    let rewritten = expr.transform_down(|e| {
+        if let Some(output_name) = projected_outputs.get(&e) {
+            Ok(Transformed::new(
+                resolved_col(output_name.as_str()),
+                true,
+                TreeNodeRecursion::Jump,
+            ))
+        } else {
+            Ok(Transformed::no(e))
+        }
+    })?;
+    Ok(rewritten.data)
 }
 
 /// When multiple GROUP BY expressions share the same `name()` (e.g. `ClientIP - 1` and

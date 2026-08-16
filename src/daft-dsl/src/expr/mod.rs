@@ -2355,6 +2355,22 @@ pub fn has_agg(expr: &ExprRef) -> bool {
     found_agg
 }
 
+pub fn has_window(expr: &ExprRef) -> bool {
+    use common_treenode::{TreeNode, TreeNodeRecursion};
+
+    let mut found_window = false;
+
+    let _ = expr.apply(|e| match e.as_ref() {
+        Expr::Over(_, _) => {
+            found_window = true;
+            Ok(TreeNodeRecursion::Stop)
+        }
+        _ => Ok(TreeNodeRecursion::Continue),
+    });
+
+    found_window
+}
+
 #[inline]
 pub fn is_actor_pool_udf(expr: &ExprRef) -> bool {
     matches!(
