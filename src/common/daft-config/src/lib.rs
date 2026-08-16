@@ -119,10 +119,6 @@ pub struct DaftExecutionConfig {
     pub parquet_target_filesize: usize,
     pub parquet_target_row_group_size: usize,
     pub parquet_inflation_factor: f64,
-    pub csv_target_filesize: usize,
-    pub csv_inflation_factor: f64,
-    pub json_target_filesize: usize,
-    pub json_inflation_factor: f64,
     pub text_inflation_factor: f64,
     pub shuffle_aggregation_default_partitions: usize,
     pub partial_aggregation_threshold: usize,
@@ -166,10 +162,6 @@ impl Default for DaftExecutionConfig {
             parquet_target_filesize: 512 * 1024 * 1024, // 512MB
             parquet_target_row_group_size: 128 * 1024 * 1024, // 128MB
             parquet_inflation_factor: 3.0,
-            csv_target_filesize: 512 * 1024 * 1024, // 512MB
-            csv_inflation_factor: 0.5,
-            json_target_filesize: 512 * 1024 * 1024, // 512MB
-            json_inflation_factor: 0.25,
             text_inflation_factor: 1.0,
             shuffle_aggregation_default_partitions: 200,
             partial_aggregation_threshold: 10000,
@@ -201,8 +193,6 @@ impl DaftExecutionConfig {
     const ENV_DAFT_ACTOR_UDF_READY_TIMEOUT: &'static str = "DAFT_ACTOR_UDF_READY_TIMEOUT";
     const ENV_DAFT_WORKER_STARTUP_TIMEOUT: &'static str = "DAFT_WORKER_STARTUP_TIMEOUT";
     const ENV_PARQUET_INFLATION_FACTOR: &'static str = "DAFT_PARQUET_INFLATION_FACTOR";
-    const ENV_CSV_INFLATION_FACTOR: &'static str = "DAFT_CSV_INFLATION_FACTOR";
-    const ENV_JSON_INFLATION_FACTOR: &'static str = "DAFT_JSON_INFLATION_FACTOR";
     const ENV_TEXT_INFLATION_FACTOR: &'static str = "DAFT_TEXT_INFLATION_FACTOR";
     const ENV_DAFT_MAINTAIN_ORDER: &'static str = "DAFT_MAINTAIN_ORDER";
 
@@ -257,18 +247,6 @@ impl DaftExecutionConfig {
             cfg.parquet_inflation_factor,
         ) {
             cfg.parquet_inflation_factor = val;
-        }
-
-        if let Some(val) =
-            parse_number_from_env(Self::ENV_CSV_INFLATION_FACTOR, cfg.csv_inflation_factor)
-        {
-            cfg.csv_inflation_factor = val;
-        }
-
-        if let Some(val) =
-            parse_number_from_env(Self::ENV_JSON_INFLATION_FACTOR, cfg.json_inflation_factor)
-        {
-            cfg.json_inflation_factor = val;
         }
 
         if let Some(val) =

@@ -20,13 +20,14 @@ def gen_tpch(request):
     num_parts = request.param
 
     csv_files_location = data_generation.gen_csv_files(TPCH_DBGEN_DIR, num_parts, SCALE_FACTOR)
+    parquet_files_location = data_generation.gen_parquet(csv_files_location)
 
     sqlite_path = data_generation.gen_sqlite_db(
         csv_filepath=csv_files_location,
         num_parts=num_parts,
     )
 
-    return csv_files_location, sqlite_path
+    return parquet_files_location, sqlite_path
 
 
 @pytest.fixture(scope="module")

@@ -1,15 +1,12 @@
 use std::{collections::HashMap, sync::Arc};
 
 use common_error::DaftResult;
-use daft_csv::{CsvConvertOptions, CsvParseOptions, CsvReadOptions};
 use daft_dsl::{AggExpr, Expr};
-use daft_io::{GetRange, IOStatsRef};
-use daft_json::{JsonConvertOptions, JsonParseOptions, JsonReadOptions};
+use daft_io::IOStatsRef;
 use daft_parquet::read::ParquetSchemaInferenceOptions;
 use daft_recordbatch::RecordBatch;
 use daft_scan::{
-    ChunkSpec, CsvSourceConfig, FileFormatConfig, JsonSourceConfig, ParquetSourceConfig, ScanTask,
-    SourceConfig, TextSourceConfig,
+    ChunkSpec, FileFormatConfig, ParquetSourceConfig, ScanTask, SourceConfig, TextSourceConfig,
 };
 use daft_text::{TextConvertOptions, TextReadOptions};
 use daft_warc::WarcConvertOptions;
@@ -42,30 +39,6 @@ pub(crate) async fn read_scan_task(
                     io_stats,
                     delete_map,
                     maintain_order,
-                    chunk_size,
-                )
-                .await
-            }
-            FileFormatConfig::Csv(cfg) => {
-                read_csv(
-                    scan_task,
-                    cfg,
-                    url,
-                    file_column_names,
-                    io_client,
-                    io_stats,
-                    chunk_size,
-                )
-                .await
-            }
-            FileFormatConfig::Json(cfg) => {
-                read_json(
-                    scan_task,
-                    cfg,
-                    url,
-                    file_column_names,
-                    io_client,
-                    io_stats,
                     chunk_size,
                 )
                 .await
@@ -139,95 +112,6 @@ async fn read_parquet(
         )
         .await
     }
-}
-
-async fn read_csv(
-    scan_task: &ScanTask,
-    cfg: &CsvSourceConfig,
-    url: &str,
-    file_column_names: Option<Vec<String>>,
-    io_client: Arc<daft_io::IOClient>,
-    io_stats: IOStatsRef,
-    chunk_size: usize,
-) -> DaftResult<BoxStream<'static, DaftResult<RecordBatch>>> {
-    let schema_of_file = scan_task.schema.clone();
-    let col_names = if !cfg.has_headers {
-        Some(schema_of_file.field_names().collect::<Vec<_>>())
-    } else {
-        None
-    };
-    let convert_options = CsvConvertOptions::new_internal(
-        scan_task.pushdowns.limit,
-        file_column_names
-            .as_ref()
-            .map(|cols| cols.iter().map(|col| (*col).clone()).collect()),
-        col_names
-            .as_ref()
-            .map(|cols| cols.iter().map(|col| (*col).to_string()).collect()),
-        Some(schema_of_file),
-        scan_task.pushdowns.filters.clone(),
-    );
-    let parse_options = CsvParseOptions::new_with_defaults(
-        cfg.has_headers,
-        cfg.delimiter,
-        cfg.double_quote,
-        cfg.quote,
-        cfg.allow_variable_columns,
-        cfg.escape_char,
-        cfg.comment,
-    )?;
-    let csv_chunk_size = cfg.chunk_size.or(Some(chunk_size));
-    let read_options = CsvReadOptions::new_internal(cfg.buffer_size, csv_chunk_size);
-    daft_csv::stream_csv(
-        url.to_string(),
-        Some(convert_options),
-        Some(parse_options),
-        Some(read_options),
-        io_client,
-        Some(io_stats),
-        None,
-    )
-    .await
-}
-
-async fn read_json(
-    scan_task: &ScanTask,
-    cfg: &JsonSourceConfig,
-    url: &str,
-    file_column_names: Option<Vec<String>>,
-    io_client: Arc<daft_io::IOClient>,
-    io_stats: IOStatsRef,
-    chunk_size: usize,
-) -> DaftResult<BoxStream<'static, DaftResult<RecordBatch>>> {
-    let source = scan_task.sources.first().unwrap();
-    let schema_of_file = scan_task.schema.clone();
-    let convert_options = JsonConvertOptions::new_internal(
-        scan_task.pushdowns.limit,
-        file_column_names
-            .as_ref()
-            .map(|cols| cols.iter().map(|col| (*col).clone()).collect()),
-        Some(schema_of_file),
-        scan_task.pushdowns.filters.clone(),
-    );
-    let parse_options = JsonParseOptions::new_internal(cfg.skip_empty_files);
-    let json_chunk_size = cfg.chunk_size.or(Some(chunk_size));
-    let read_options = JsonReadOptions::new_internal(cfg.buffer_size, json_chunk_size);
-
-    let range = source.get_chunk_spec().and_then(|spec| match spec {
-        daft_scan::ChunkSpec::Bytes { start, end } => Some(GetRange::Bounded(*start..*end)),
-        _ => None,
-    });
-    daft_json::read::stream_json(
-        url.to_string(),
-        Some(convert_options),
-        Some(parse_options),
-        Some(read_options),
-        io_client,
-        Some(io_stats),
-        None,
-        range,
-    )
-    .await
 }
 
 async fn read_warc(

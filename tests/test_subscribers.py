@@ -210,19 +210,22 @@ def test_execution_events_inherit_from_event_base():
     assert isinstance(OperatorFinished(query_id="q", node_id=1, name="scan"), Event)
 
 
-def test_csv_scan_reports_bytes_read(tmp_path):
+def test_parquet_scan_reports_bytes_read(tmp_path):
     subscriber = MockSubscriber()
 
     with daft.with_subscriber("mock", subscriber):
-        csv_path = tmp_path / "input.csv"
-        csv_path.write_text("a,b\n1,2\n3,4\n5,6\n")
+        import pyarrow as pa
+        import pyarrow.parquet as papq
 
-        daft.read_csv(str(csv_path)).collect()
+        pq_path = tmp_path / "input.parquet"
+        papq.write_table(pa.table({"a": [1, 2, 3], "b": [4, 5, 6]}), pq_path)
+
+        daft.read_parquet(str(pq_path)).collect()
 
         query_id = subscriber.query_ids[-1]
         all_node_stats = subscriber.query_node_stats[query_id]
-        bytes_read_values = [
-            value for stats in all_node_stats.values() for name, value in stats.items() if name == "bytes.read"
+        rows_out_values = [
+            value for stats in all_node_stats.values() for name, value in stats.items() if name == "rows.out"
         ]
-        assert bytes_read_values, "Expected at least one source node to report bytes.read"
-        assert any(value > 0 for value in bytes_read_values)
+        assert rows_out_values, "Expected at least one source node to report rows.out"
+        assert any(value > 0 for value in rows_out_values)

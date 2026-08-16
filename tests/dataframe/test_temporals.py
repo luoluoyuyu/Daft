@@ -41,7 +41,7 @@ def test_temporal_arithmetic_with_same_type() -> None:
     assert result["sub_dur"] == [timedelta(0), timedelta(0)]
 
 
-@pytest.mark.parametrize("format", ["csv", "parquet"])
+@pytest.mark.parametrize("format", ["parquet"])
 def test_temporal_file_roundtrip(format) -> None:
     data = {
         "date32": pa.array([1], pa.date32()),
@@ -62,32 +62,13 @@ def test_temporal_file_roundtrip(format) -> None:
         # "interval": pa.array([pa.scalar((1, 1, 1), type=pa.month_day_nano_interval()).as_py()]),
     }
 
-    # CSV writing of these files only supported by pyarrow CSV writer in PyArrow >= 7.0.0
-    if format == "csv":
-        data = {
-            **data,
-            "timestamp_s": pa.array([1], pa.timestamp("s")),
-            "timestamp_ms": pa.array([1], pa.timestamp("ms")),
-            "timestamp_us": pa.array([1], pa.timestamp("us")),
-            "timestamp_s_utc_tz": pa.array([1], pa.timestamp("s", tz="UTC")),
-            "timestamp_ms_utc_tz": pa.array([1], pa.timestamp("ms", tz="UTC")),
-            "timestamp_us_utc_tz": pa.array([1], pa.timestamp("us", tz="UTC")),
-            "timestamp_s_tz": pa.array([1], pa.timestamp("s", tz="Asia/Singapore")),
-            "timestamp_ms_tz": pa.array([1], pa.timestamp("ms", tz="Asia/Singapore")),
-            "timestamp_us_tz": pa.array([1], pa.timestamp("us", tz="Asia/Singapore")),
-        }
-
     pa_table = pa.Table.from_pydict(data)
 
     df = daft.from_arrow(pa_table)
 
     with tempfile.TemporaryDirectory() as dirname:
-        if format == "csv":
-            df.write_csv(dirname)
-            df_readback = daft.read_csv(dirname).collect()
-        elif format == "parquet":
-            df.write_parquet(dirname)
-            df_readback = daft.read_parquet(dirname).collect()
+        df.write_parquet(dirname)
+        df_readback = daft.read_parquet(dirname).collect()
 
         assert df.to_pydict() == df_readback.to_pydict()
 

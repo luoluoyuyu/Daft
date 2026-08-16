@@ -97,7 +97,7 @@ impl BlockingSink for CommitWriteSink {
                         && file_info.partition_cols.is_none()
                     {
                         match file_info.file_format {
-                            FileFormat::Parquet | FileFormat::Csv => {
+                            FileFormat::Parquet => {
                                 let writer_factory =
                                     daft_writers::physical::PhysicalWriterFactory::new(
                                         file_info.clone(),

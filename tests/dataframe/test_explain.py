@@ -57,9 +57,7 @@ def test_explain_with_cross_join(small_df, large_df):
 @pytest.mark.parametrize(
     "write_fn,kwargs",
     [
-        ("write_csv", {"write_mode": "overwrite"}),
         ("write_parquet", {"write_mode": "overwrite"}),
-        ("write_json", {"write_mode": "overwrite"}),
     ],
 )
 def test_explain_after_write_preserves_upstream_plan(tmp_path, write_fn, kwargs):

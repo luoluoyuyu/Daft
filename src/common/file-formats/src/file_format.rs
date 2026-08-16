@@ -1,4 +1,4 @@
-/// Defines FileFormat enum, which represents the format of a file, e.g. Parquet, CSV, JSON.
+/// Defines FileFormat enum, which represents the format of a file.
 ///
 /// NOTE: This is currently abused to also represent data being read from a Database or from a Python
 /// location. We should refactor our code to remove this.
@@ -10,7 +10,8 @@ use common_py_serde::impl_bincode_py_state_serialization;
 use pyo3::prelude::*;
 use serde::{Deserialize, Serialize};
 
-/// Format of a file, e.g. Parquet, CSV, JSON.
+/// Format of a file. Daft supports Parquet and WARC file scans; writes are
+/// Parquet (with Iceberg/DeltaLake/Lance through their catalog writers).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Copy)]
 #[cfg_attr(
     feature = "python",
@@ -18,8 +19,6 @@ use serde::{Deserialize, Serialize};
 )]
 pub enum FileFormat {
     Parquet,
-    Csv,
-    Json,
     Warc,
     Text,
 }
@@ -30,8 +29,6 @@ impl FileFormat {
     fn ext(&self) -> &'static str {
         match self {
             Self::Parquet => "parquet",
-            Self::Csv => "csv",
-            Self::Json => "json",
             Self::Warc => "warc",
             Self::Text => "txt",
         }
@@ -42,14 +39,10 @@ impl FromStr for FileFormat {
     type Err = DaftError;
 
     fn from_str(file_format: &str) -> DaftResult<Self> {
-        use FileFormat::{Csv, Json, Parquet, Text, Warc};
+        use FileFormat::{Parquet, Text, Warc};
 
         if file_format.trim().eq_ignore_ascii_case("parquet") {
             Ok(Parquet)
-        } else if file_format.trim().eq_ignore_ascii_case("csv") {
-            Ok(Csv)
-        } else if file_format.trim().eq_ignore_ascii_case("json") {
-            Ok(Json)
         } else if file_format.trim().eq_ignore_ascii_case("warc") {
             Ok(Warc)
         } else if file_format.trim().eq_ignore_ascii_case("txt") {

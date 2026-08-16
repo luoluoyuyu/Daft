@@ -245,8 +245,6 @@ impl Source for ScanTaskSource {
             match source_config.as_ref() {
                 SourceConfig::File(ffc) => match ffc {
                     FileFormatConfig::Parquet(_) => "Read Parquet".into(),
-                    FileFormatConfig::Csv(_) => "Read CSV".into(),
-                    FileFormatConfig::Json(_) => "Read JSON".into(),
                     FileFormatConfig::Warc(_) => "Read WARC".into(),
                     FileFormatConfig::Text(_) => "Read Text".into(),
                 },

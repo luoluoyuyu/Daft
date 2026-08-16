@@ -1,7 +1,5 @@
 use std::sync::Arc;
 
-mod split_jsonl;
-
 use common_daft_config::DaftExecutionConfig;
 use common_error::DaftResult;
 use daft_io::IOStatsContext;
@@ -329,11 +327,8 @@ pub fn split_and_merge_pass(
     }
 
     let iter: BoxScanTaskIter = Box::new(scan_tasks.as_ref().iter().cloned().map(Ok));
-    // Split JSONL by byte ranges aligned to line boundaries for JSONFileFormat, other formats will be leaked through.
-    // If there are other file formats in the future, a pipeline can be constructed to pass split_tasks.
-    let split_jsonl_tasks = split_jsonl::split_by_jsonl_ranges(iter, cfg);
     let split_tasks = split_by_row_groups(
-        split_jsonl_tasks,
+        iter,
         cfg.parquet_split_row_groups_max_files,
         cfg.scan_tasks_min_size_bytes,
         cfg.scan_tasks_max_size_bytes,

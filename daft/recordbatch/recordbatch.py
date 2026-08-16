@@ -4,19 +4,11 @@ import logging
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from daft.daft import (
-    CsvConvertOptions,
-    CsvParseOptions,
-    CsvReadOptions,
     JoinType,
-    JsonConvertOptions,
-    JsonParseOptions,
-    JsonReadOptions,
     OperatorMetrics,
     PySeries,
 )
 from daft.daft import PyRecordBatch as _PyRecordBatch
-from daft.daft import read_csv as _read_csv
-from daft.daft import read_json as _read_json
 from daft.daft import read_parquet as _read_parquet
 from daft.daft import read_parquet_into_pyarrow as _read_parquet_into_pyarrow
 from daft.daft import read_parquet_into_pyarrow_bulk as _read_parquet_into_pyarrow_bulk
@@ -516,51 +508,6 @@ class RecordBatch:
                 multithreaded_io=multithreaded_io,
             )
         )
-
-    @classmethod
-    def read_csv(
-        cls,
-        path: str,
-        convert_options: CsvConvertOptions | None = None,
-        parse_options: CsvParseOptions | None = None,
-        read_options: CsvReadOptions | None = None,
-        io_config: IOConfig | None = None,
-        multithreaded_io: bool | None = None,
-    ) -> RecordBatch:
-        return RecordBatch._from_pyrecordbatch(
-            _read_csv(
-                uri=path,
-                convert_options=convert_options,
-                parse_options=parse_options,
-                read_options=read_options,
-                io_config=io_config,
-                multithreaded_io=multithreaded_io,
-            )
-        )
-
-    @classmethod
-    def read_json(
-        cls,
-        path: str,
-        convert_options: JsonConvertOptions | None = None,
-        parse_options: JsonParseOptions | None = None,
-        read_options: JsonReadOptions | None = None,
-        io_config: IOConfig | None = None,
-        multithreaded_io: bool | None = None,
-        max_chunks_in_flight: int | None = None,
-    ) -> RecordBatch:
-        return RecordBatch._from_pyrecordbatch(
-            _read_json(
-                uri=path,
-                convert_options=convert_options,
-                parse_options=parse_options,
-                read_options=read_options,
-                io_config=io_config,
-                multithreaded_io=multithreaded_io,
-                max_chunks_in_flight=max_chunks_in_flight,
-            )
-        )
-
 
 def read_parquet_into_pyarrow(
     path: str,

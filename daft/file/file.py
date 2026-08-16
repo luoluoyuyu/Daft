@@ -29,15 +29,13 @@ class File:
     Examples:
         >>> import daft
         >>> from daft.functions import file
-        >>> df = daft.from_pydict({"paths": ["data.json"]})
+        >>> df = daft.from_pydict({"paths": ["data.parquet"]})
         >>> df = df.select(file(df["paths"]))
         >>>
         >>> @daft.func
-        >>> def read_json(file: daft.File) -> str:
-        >>>     import json
+        >>> def read_text(file: daft.File) -> str:
         >>>     with file.open() as f:
-        >>>         data = json.load(f)
-        >>>         return data["text"]
+        >>>         return f.read().decode("utf-8")
     """
 
     _inner: PyFileReference

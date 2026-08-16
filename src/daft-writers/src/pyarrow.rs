@@ -1,6 +1,5 @@
 use async_trait::async_trait;
 use common_error::DaftResult;
-use daft_logical_plan::sink_info::CsvFormatOption;
 use daft_micropartition::{MicroPartition, python::PyMicroPartition};
 use daft_recordbatch::{RecordBatch, python::PyRecordBatch};
 use pyo3::{Python, types::PyAnyMethods};
@@ -45,54 +44,6 @@ impl PyArrowWriter {
                 io_config.map(|cfg| daft_io::python::IOConfig {
                     config: cfg.clone(),
                 }),
-            ))?;
-            Ok(Self {
-                py_writer: py_writer.into(),
-                is_closed: false,
-                bytes_written: 0,
-            })
-        })
-    }
-
-    pub fn new_csv_writer(
-        root_dir: &str,
-        file_idx: usize,
-        io_config: Option<&daft_io::IOConfig>,
-        partition_values: Option<&RecordBatch>,
-        format_option: CsvFormatOption,
-    ) -> DaftResult<Self> {
-        Python::attach(|py| {
-            let file_writer_module = py.import(pyo3::intern!(py, "daft.io.writer"))?;
-            let file_writer_class = file_writer_module.getattr("CSVFileWriter")?;
-            let _from_pyrecordbatch = py
-                .import(pyo3::intern!(py, "daft.recordbatch"))?
-                .getattr(pyo3::intern!(py, "RecordBatch"))?
-                .getattr(pyo3::intern!(py, "_from_pyrecordbatch"))?;
-            let partition_values = match partition_values {
-                Some(pv) => {
-                    let py_recordbatch =
-                        _from_pyrecordbatch.call1((PyRecordBatch::from(pv.clone()),))?;
-                    Some(py_recordbatch)
-                }
-                None => None,
-            };
-            let delimiter = format_option
-                .delimiter
-                .map(|b| String::from_utf8(vec![b]).unwrap_or_else(|_| ",".to_string()));
-            let header = format_option.header;
-            let date_format = format_option.date_format.clone();
-            let timestamp_format = format_option.timestamp_format.clone();
-            let py_writer = file_writer_class.call1((
-                root_dir,
-                file_idx,
-                partition_values,
-                io_config.map(|cfg| daft_io::python::IOConfig {
-                    config: cfg.clone(),
-                }),
-                delimiter,
-                header,
-                date_format,
-                timestamp_format,
             ))?;
             Ok(Self {
                 py_writer: py_writer.into(),

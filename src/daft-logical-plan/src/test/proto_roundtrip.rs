@@ -115,9 +115,9 @@ fn sink_proto_roundtrip() {
     let sink_info = crate::sink_info::OutputFileInfo::new(
         "/tmp/out".to_string(),
         WriteMode::Append,
-        FileFormat::Csv,
-        Some(crate::sink_info::FormatSinkOption::Csv(
-            crate::sink_info::CsvFormatOption::default(),
+        FileFormat::Parquet,
+        Some(crate::sink_info::FormatSinkOption::Parquet(
+            crate::sink_info::ParquetFormatOption {},
         )),
         None,
         Some("gzip".to_string()),

@@ -122,12 +122,10 @@ pub mod pylib {
         daft_runners::register_modules(m)?;
         daft_core::register_modules(m)?;
         daft_core::python::register_modules(m)?;
-        daft_csv::register_modules(m)?;
         daft_distributed::register_modules(m)?;
         daft_dsl::register_modules(m)?;
         daft_functions::register_modules(m)?;
         daft_io::register_modules(m)?;
-        daft_json::register_modules(m)?;
         daft_local_execution::register_modules(m)?;
         daft_local_plan::register_modules(m)?;
         daft_logical_plan::register_modules(m)?;

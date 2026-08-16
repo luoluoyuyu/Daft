@@ -30,19 +30,12 @@ SAMPLE_DATA = pa.table(
 )
 
 
-@pytest.mark.parametrize("file_format", ["csv", "parquet", "json"])
+@pytest.mark.parametrize("file_format", ["parquet"])
 @pytest.mark.parametrize("partition_by", [["str_col"], ["int_col"], ["date_col"], ["str_col", "int_col"]])
 def test_explicit_schema_preserves_hive_partitions(tmpdir, file_format, partition_by):
     base = daft.from_arrow(SAMPLE_DATA)
     # Write partitioned dataset
-    if file_format == "parquet":
-        base.write_parquet(str(tmpdir), partition_cols=partition_by)
-    elif file_format == "csv":
-        base.write_csv(str(tmpdir), partition_cols=partition_by)
-    elif file_format == "json":
-        base.write_json(str(tmpdir), partition_cols=partition_by)
-    else:
-        pytest.skip("Unsupported format for this test")
+    base.write_parquet(str(tmpdir), partition_cols=partition_by)
 
     glob_path = os.path.join(str(tmpdir), "**")
 
@@ -53,14 +46,7 @@ def test_explicit_schema_preserves_hive_partitions(tmpdir, file_format, partitio
     }
 
     df = None
-    if file_format == "csv":
-        df = daft.read_csv(glob_path, infer_schema=False, schema=schema_hint, hive_partitioning=True)
-    elif file_format == "parquet":
-        df = daft.read_parquet(glob_path, infer_schema=False, schema=schema_hint, hive_partitioning=True)
-    elif file_format == "json":
-        df = daft.read_json(glob_path, infer_schema=False, schema=schema_hint, hive_partitioning=True)
-    else:
-        pytest.skip("Unsupported format for this test")
+    df = daft.read_parquet(glob_path, infer_schema=False, schema=schema_hint, hive_partitioning=True)
 
     # Ensure partition columns are present and have expected values
     assert df is not None, "DataFrame should be initialized"
@@ -70,18 +56,11 @@ def test_explicit_schema_preserves_hive_partitions(tmpdir, file_format, partitio
         assert set(pdf[col]) == set(SAMPLE_DATA[col].to_pylist())
 
 
-@pytest.mark.parametrize("file_format", ["csv", "parquet", "json"])
+@pytest.mark.parametrize("file_format", ["parquet"])
 def test_explicit_schema_preserves_file_path_column(tmpdir, file_format):
     # Write non-partitioned dataset
     base = daft.from_arrow(SAMPLE_DATA)
-    if file_format == "csv":
-        base.write_csv(str(tmpdir))
-    elif file_format == "parquet":
-        base.write_parquet(str(tmpdir))
-    elif file_format == "json":
-        base.write_json(str(tmpdir))
-    else:
-        pytest.skip("Unsupported format for this test")
+    base.write_parquet(str(tmpdir))
 
     glob_path = os.path.join(str(tmpdir), "**")
 
@@ -92,14 +71,7 @@ def test_explicit_schema_preserves_file_path_column(tmpdir, file_format):
     }
 
     df = None
-    if file_format == "csv":
-        df = daft.read_csv(glob_path, infer_schema=False, schema=schema_hint, file_path_column="path")
-    elif file_format == "parquet":
-        df = daft.read_parquet(glob_path, infer_schema=False, schema=schema_hint, file_path_column="path")
-    elif file_format == "json":
-        df = daft.read_json(glob_path, infer_schema=False, schema=schema_hint, file_path_column="path")
-    else:
-        pytest.skip("Unsupported format for this test")
+    df = daft.read_parquet(glob_path, infer_schema=False, schema=schema_hint, file_path_column="path")
 
     assert df is not None, "DataFrame should be initialized"
     assert "path" in df.column_names, "Missing file path column when infer_schema=False"

@@ -1196,25 +1196,8 @@ message OutputFileInfo {
 
 message FormatSinkOption {
   oneof format {
-    CsvFormatOption csv = 1;
-    JsonFormatOption json = 2;
-    bool parquet = 3;
+    bool parquet = 1;
   }
-}
-
-message CsvFormatOption {
-  optional uint32 delimiter = 1; // byte value 0-255
-  optional uint32 quote = 2;
-  optional uint32 escape = 3;
-  optional bool header = 4;
-  optional string date_format = 5;
-  optional string timestamp_format = 6;
-}
-
-message JsonFormatOption {
-  optional bool ignore_null_fields = 1;
-  optional string date_format = 2;
-  optional string timestamp_format = 3;
 }
 
 // ---------------------------------------------------------------------------
@@ -1339,10 +1322,8 @@ enum OnError {
 enum FileFormat {
   FILE_FORMAT_UNSPECIFIED = 0;
   FILE_FORMAT_PARQUET = 1;
-  FILE_FORMAT_CSV = 2;
-  FILE_FORMAT_JSON = 3;
-  FILE_FORMAT_WARC = 4;
-  FILE_FORMAT_TEXT = 5;
+  FILE_FORMAT_WARC = 2;
+  FILE_FORMAT_TEXT = 3;
 }
 
 enum WriteMode {

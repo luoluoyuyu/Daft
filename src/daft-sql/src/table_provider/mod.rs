@@ -1,7 +1,5 @@
-mod read_csv;
 mod read_deltalake;
 mod read_iceberg;
-mod read_json;
 mod read_parquet;
 
 use std::{
@@ -11,10 +9,8 @@ use std::{
 
 use daft_dsl::{Expr, ExprRef};
 use daft_logical_plan::LogicalPlanBuilder;
-use read_csv::ReadCsvFunction;
 use read_deltalake::ReadDeltalakeFunction;
 use read_iceberg::SqlReadIceberg;
-use read_json::ReadJsonFunction;
 use read_parquet::ReadParquetFunction;
 use sqlparser::ast::TableFunctionArgs;
 
@@ -29,10 +25,8 @@ use crate::{
 
 pub(crate) static SQL_TABLE_FUNCTIONS: LazyLock<SQLTableFunctions> = LazyLock::new(|| {
     let mut functions = SQLTableFunctions::new();
-    functions.add_fn("read_csv", ReadCsvFunction);
     functions.add_fn("read_deltalake", ReadDeltalakeFunction);
     functions.add_fn("read_iceberg", SqlReadIceberg);
-    functions.add_fn("read_json", ReadJsonFunction);
     functions.add_fn("read_parquet", ReadParquetFunction);
     functions
 });

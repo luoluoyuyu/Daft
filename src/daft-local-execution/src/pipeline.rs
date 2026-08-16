@@ -1255,10 +1255,6 @@ fn physical_plan_to_pipeline(
             let write_format = match (file_info.file_format, file_info.partition_cols.is_some()) {
                 (FileFormat::Parquet, true) => WriteFormat::PartitionedParquet,
                 (FileFormat::Parquet, false) => WriteFormat::Parquet,
-                (FileFormat::Csv, true) => WriteFormat::PartitionedCsv,
-                (FileFormat::Csv, false) => WriteFormat::Csv,
-                (FileFormat::Json, true) => WriteFormat::PartitionedJson,
-                (FileFormat::Json, false) => WriteFormat::Json,
                 (_, _) => panic!("Unsupported file format"),
             };
             let write_sink = WriteSink::new(

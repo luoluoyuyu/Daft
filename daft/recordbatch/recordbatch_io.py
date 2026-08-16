@@ -9,14 +9,8 @@ from uuid import uuid4
 
 from daft.context import get_context
 from daft.daft import (
-    CsvConvertOptions,
-    CsvParseOptions,
-    CsvReadOptions,
     FileFormat,
     IOConfig,
-    JsonConvertOptions,
-    JsonParseOptions,
-    JsonReadOptions,
     StorageConfig,
 )
 from daft.dependencies import pa, pads, pafs
@@ -28,7 +22,6 @@ from daft.filesystem import (
 )
 from daft.logical.schema import Schema
 from daft.runners.partitioning import (
-    TableParseCSVOptions,
     TableParseParquetOptions,
     TableReadOptions,
 )
@@ -68,44 +61,6 @@ def _cast_table_to_schema(table: MicroPartition, read_options: TableReadOptions,
 
     table = MicroPartition._from_pymicropartition(table._micropartition.cast_to_schema(pruned_schema._schema))
     return table
-
-
-def read_json(
-    file: FileInput,
-    schema: Schema,
-    storage_config: StorageConfig | None = None,
-    json_read_options: JsonReadOptions | None = None,
-    read_options: TableReadOptions = TableReadOptions(),
-) -> MicroPartition:
-    """Reads a MicroPartition from a JSON file.
-
-    Args:
-        file (str | IO): either a file-like object or a string file path (potentially prefixed with a protocol such as "s3://")
-        fs (fsspec.AbstractFileSystem): fsspec FileSystem to use for reading data.
-            By default, Daft will automatically construct a FileSystem instance internally.
-        json_read_options (JsonReadOptions, optional): JSON-specific configs to apply when reading the file
-        read_options (TableReadOptions, optional): Non-format-specific options for reading the file
-
-    Returns:
-        MicroPartition: Parsed MicroPartition from JSON
-    """
-    # TODO: move this logic into Rust
-    config = storage_config if storage_config is not None else StorageConfig(True, IOConfig())
-    assert isinstance(file, (str, pathlib.Path)), "Native downloader only works on string inputs to read_json"
-    json_convert_options = JsonConvertOptions(
-        limit=read_options.num_rows,
-        include_columns=read_options.column_names,
-        schema=schema._schema if schema is not None else None,
-    )
-    json_parse_options = JsonParseOptions()
-    tbl = MicroPartition.read_json(
-        str(file),
-        convert_options=json_convert_options,
-        parse_options=json_parse_options,
-        read_options=json_read_options,
-        io_config=config.io_config,
-    )
-    return _cast_table_to_schema(tbl, read_options=read_options, schema=schema)
 
 
 def read_parquet(
@@ -172,56 +127,6 @@ def read_sql(
             mp = mp.head(read_options.num_rows)
 
     return _cast_table_to_schema(mp, read_options=read_options, schema=schema)
-
-
-def read_csv(
-    file: FileInput,
-    schema: Schema,
-    storage_config: StorageConfig | None = None,
-    csv_options: TableParseCSVOptions = TableParseCSVOptions(),
-    read_options: TableReadOptions = TableReadOptions(),
-) -> MicroPartition:
-    """Reads a MicroPartition from a CSV file.
-
-    Args:
-        file (str | IO): either a file-like object or a string file path (potentially prefixed with a protocol such as "s3://")
-        schema (Schema): Daft schema to read the CSV file into
-        fs (fsspec.AbstractFileSystem): fsspec FileSystem to use for reading data.
-            By default, Daft will automatically construct a FileSystem instance internally.
-        csv_options (TableParseCSVOptions, optional): CSV-specific configs to apply when reading the file
-        read_options (TableReadOptions, optional): Options for reading the file
-
-    Returns:
-        MicroPartition: Parsed MicroPartition from CSV
-    """
-    # TODO: move this logic into Rust
-    config = storage_config if storage_config is not None else StorageConfig(True, IOConfig())
-    assert isinstance(file, (str, pathlib.Path)), "Native downloader only works on string or Path inputs to read_csv"
-    has_header = csv_options.header_index is not None
-    csv_convert_options = CsvConvertOptions(
-        limit=read_options.num_rows,
-        include_columns=read_options.column_names,
-        column_names=schema.column_names() if not has_header else None,
-        schema=schema._schema if schema is not None else None,
-    )
-    csv_parse_options = CsvParseOptions(
-        has_header=has_header,
-        delimiter=csv_options.delimiter,
-        double_quote=csv_options.double_quote,
-        quote=csv_options.quote,
-        allow_variable_columns=csv_options.allow_variable_columns,
-        escape_char=csv_options.escape_char,
-        comment=csv_options.comment,
-    )
-    csv_read_options = CsvReadOptions(buffer_size=csv_options.buffer_size, chunk_size=csv_options.chunk_size)
-    tbl = MicroPartition.read_csv(
-        str(file),
-        convert_options=csv_convert_options,
-        parse_options=csv_parse_options,
-        read_options=csv_read_options,
-        io_config=config.io_config,
-    )
-    return _cast_table_to_schema(tbl, read_options=read_options, schema=schema)
 
 
 def partitioned_table_to_hive_iter(partitioned: PartitionedTable, root_path: str) -> Iterator[tuple[pa.Table, str]]:
@@ -307,12 +212,6 @@ def write_tabular(
         inflation_factor = execution_config.parquet_inflation_factor
         target_file_size = execution_config.parquet_target_filesize
         opts = format.make_write_options(compression=compression, use_compliant_nested_type=False)
-    elif file_format == FileFormat.Csv:
-        format = pads.CsvFileFormat()
-        opts = None
-        assert compression is None
-        inflation_factor = execution_config.csv_inflation_factor
-        target_file_size = execution_config.csv_target_filesize
     else:
         raise ValueError(f"Unsupported file format {file_format}")
 

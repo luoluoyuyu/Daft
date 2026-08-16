@@ -20,7 +20,6 @@ ENGINES = ["native", "python"]
             5 * 1024 * 1024,
             1024 * 1024,
         ),  # 5MB target file size, 1MB target row group size
-        ("csv", None, None),
     ],
 )
 @pytest.mark.parametrize("partition_cols", [None, ["L_SHIPMODE"]])
@@ -47,18 +46,15 @@ def test_streaming_write(
         ctx = daft.context.execution_config_ctx(
             parquet_target_filesize=target_file_size,
             parquet_target_row_group_size=target_row_group_size,
-            csv_target_filesize=target_file_size,
         )
 
         with ctx:
             if file_type == "parquet":
                 return daft_df.write_parquet(tmp_path, partition_cols=partition_cols)
-            elif file_type == "csv":
-                return daft_df.write_csv(tmp_path, partition_cols=partition_cols)
             else:
                 raise ValueError(f"{file_type} unsupported")
 
     benchmark_group = f"parts-{num_parts}-partition-cols-{partition_cols}-file-type-{file_type}-target-file-size-{target_file_size}-target-row-group-size-{target_row_group_size}"
     result_files = benchmark_with_memray(f, benchmark_group).to_pydict()["path"]
-    read_back = daft.read_parquet(result_files) if file_type == "parquet" else daft.read_csv(result_files)
+    read_back = daft.read_parquet(result_files)
     assert read_back.count_rows() == daft_df.count_rows()

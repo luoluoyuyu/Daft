@@ -96,7 +96,6 @@ class GlueCatalog(Catalog):
     def __new__(cls) -> GlueCatalog:
         if cls is GlueCatalog:
             cls._table_impls = [
-                GlueCsvTable,
                 GlueParquetTable,
                 GlueIcebergTable,
                 GlueDeltaTable,
@@ -293,81 +292,6 @@ class GlueTable(Table, ABC):
         import json
 
         return json.dumps(self._table, indent=4, default=str)
-
-
-class GlueCsvTable(GlueTable):
-    """GlueCsvTable is for Glue classification='CSV' where we have delimited files under a common S3 prefix."""
-
-    _path: str
-    _schema: Schema
-    _has_headers: bool = True
-    _delimiter: str = ","
-    _io_config: IOConfig | None = None
-    _hive_partitioning: bool = False
-    _hive_partitioning_cols: list[ColumnInputType] = []
-
-    def __init__(self) -> None:
-        raise ValueError("GlueCsvTable.__init__() not supported!")
-
-    @classmethod
-    def from_table_info(cls, catalog: GlueCatalog, table: GlueTableInfo) -> GlueTable:
-        # validate parameters information
-        parameters: Parameters = table.get("Parameters", {})
-
-        # check 'csv'
-        classification = parameters.get("classification")
-        if classification is None:
-            raise ValueError("GlueTableInfo is missing the required parameter 'classification'.")
-        if classification.lower() != "csv":
-            raise ValueError(f"GlueTableInfo had classification {classification}, but expected 'CSV'")
-
-        t = GlueCsvTable.__new__(GlueCsvTable)
-        t._catalog = catalog
-        t._table = table
-        t._io_config = None  # todo
-
-        # parse csv format information
-        t._schema = _convert_glue_schema(table["StorageDescriptor"]["Columns"])
-        t._path = table["StorageDescriptor"]["Location"]
-        t._has_headers = parameters.get("skip.header.line.count", "0") == "1"
-        t._delimiter = parameters.get("delimiter", ",")
-        t._hive_partitioning = False
-        t._hive_partitioning_cols = []
-
-        return t
-
-    def read(self, **options: Any) -> DataFrame:
-        from daft.io._csv import read_csv
-
-        return read_csv(
-            path=self._path,
-            infer_schema=False,
-            schema={c.name: c.dtype for c in self._schema},
-            has_headers=self._has_headers,
-            delimiter=self._delimiter,
-            double_quote=True,
-            quote=None,
-            escape_char=None,
-            comment=None,
-            allow_variable_columns=False,
-            io_config=self._io_config,
-            file_path_column=None,
-            hive_partitioning=self._hive_partitioning,
-        )
-
-    def append(self, df: DataFrame, **options: Any) -> None:
-        df.write_csv(
-            root_dir=self._path,
-            write_mode="append",
-            partition_cols=self._hive_partitioning_cols if self._hive_partitioning else None,
-        )
-
-    def overwrite(self, df: DataFrame, **options: Any) -> None:
-        df.write_csv(
-            root_dir=self._path,
-            write_mode="overwrite",
-            partition_cols=self._hive_partitioning_cols if self._hive_partitioning else None,
-        )
 
 
 class GlueParquetTable(GlueTable):

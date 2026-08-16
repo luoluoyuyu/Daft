@@ -382,9 +382,9 @@ class TestGravitinoRustCodePaths:
 
         io_config = IOConfig(gravitino=GravitinoConfig(endpoint="http://localhost:8090", metalake_name="test"))
 
-        # Test with CSV format
+        # Test with Parquet format
         with pytest.raises(Exception):
-            glob_path_with_stats("gvfs://fileset/cat/sch/fs/data.csv", FileFormat.Csv, io_config)
+            glob_path_with_stats("gvfs://fileset/cat/sch/fs/data.parquet", FileFormat.Parquet, io_config)
 
     def test_url_with_numbers_in_segments(self):
         """Test URL with numeric characters in path segments."""

@@ -1078,9 +1078,6 @@ impl SQLPlanner<'_> {
     /// Plan a `FROM <path>` table factor by rewriting to relevant table-value function.
     fn plan_relation_path(&self, path: &str) -> SQLPlannerResult<LogicalPlanBuilder> {
         let func = match Path::new(path).extension() {
-            Some(ext) if ext.eq_ignore_ascii_case("csv") => "read_csv",
-            Some(ext) if ext.eq_ignore_ascii_case("json") => "read_json",
-            Some(ext) if ext.eq_ignore_ascii_case("jsonl") => "read_json",
             Some(ext) if ext.eq_ignore_ascii_case("parquet") => "read_parquet",
             Some(_) => invalid_operation_err!("unsupported file path extension: {}", path),
             None => invalid_operation_err!("unsupported file path, no extension: {}", path),

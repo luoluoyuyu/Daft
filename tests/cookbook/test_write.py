@@ -14,8 +14,18 @@ from tests.conftest import assert_df_equals
 from tests.cookbook.assets import COOKBOOK_DATA_CSV
 
 
-def test_parquet_write(tmp_path, with_morsel_size):
-    df = daft.read_csv(COOKBOOK_DATA_CSV)
+@pytest.fixture(scope="function")
+def source_df(tmp_path):
+    import pyarrow.csv as pacsv
+    import pyarrow.parquet as papq
+
+    tmp_file = tmp_path / str(uuid.uuid4())
+    papq.write_table(pacsv.read_csv(COOKBOOK_DATA_CSV), str(tmp_file))
+    return daft.read_parquet(str(tmp_file))
+
+
+def test_parquet_write(tmp_path, source_df, with_morsel_size):
+    df = source_df
 
     pd_df = df.write_parquet(tmp_path)
     read_back_pd_df = daft.read_parquet(tmp_path.as_posix() + "/*.parquet").to_pandas()
@@ -27,8 +37,8 @@ def test_parquet_write(tmp_path, with_morsel_size):
     assert len(pd_df._preview.partition) == 1
 
 
-def test_parquet_write_with_partitioning(tmp_path, with_morsel_size):
-    df = daft.read_csv(COOKBOOK_DATA_CSV)
+def test_parquet_write_with_partitioning(tmp_path, source_df, with_morsel_size):
+    df = source_df
 
     pd_df = df.write_parquet(tmp_path, partition_cols=["Borough"])
 
@@ -42,8 +52,8 @@ def test_parquet_write_with_partitioning(tmp_path, with_morsel_size):
 
 
 @pytest.mark.parametrize("write_mode", ["append", "overwrite"])
-def test_empty_parquet_write_without_partitioning(tmp_path, write_mode, with_morsel_size):
-    df = daft.read_csv(COOKBOOK_DATA_CSV)
+def test_empty_parquet_write_without_partitioning(tmp_path, source_df, write_mode, with_morsel_size):
+    df = source_df
     df = df.where(daft.lit(False))
 
     # Create a unique path to make sure that the writer is comfortable with nonexistent directories
@@ -59,8 +69,8 @@ def test_empty_parquet_write_without_partitioning(tmp_path, write_mode, with_mor
 
 
 @pytest.mark.parametrize("write_mode", ["append", "overwrite"])
-def test_empty_parquet_write_with_partitioning(tmp_path, write_mode, with_morsel_size):
-    df = daft.read_csv(COOKBOOK_DATA_CSV)
+def test_empty_parquet_write_with_partitioning(tmp_path, source_df, write_mode, with_morsel_size):
+    df = source_df
     df = df.where(daft.lit(False))
 
     # Create a unique path to make sure that the writer is comfortable with nonexistent directories
@@ -72,8 +82,8 @@ def test_empty_parquet_write_with_partitioning(tmp_path, write_mode, with_morsel
         daft.read_parquet(os.path.join(path, "**/*.parquet")).to_pandas()
 
 
-def test_parquet_write_with_partitioning_readback_values(tmp_path, with_morsel_size):
-    df = daft.read_csv(COOKBOOK_DATA_CSV)
+def test_parquet_write_with_partitioning_readback_values(tmp_path, source_df, with_morsel_size):
+    df = source_df
 
     output_files = df.write_parquet(tmp_path, partition_cols=["Borough"])
     output_dict = output_files.to_pydict()
@@ -205,110 +215,3 @@ def test_parquet_partitioned_write_with_some_empty_partitions(tmp_path, with_mor
 
     read_back = daft.read_parquet(tmp_path.as_posix() + "/**/*.parquet").sort("x").to_pydict()
     assert read_back == data
-
-
-def test_csv_write(tmp_path, with_morsel_size):
-    df = daft.read_csv(COOKBOOK_DATA_CSV)
-
-    pd_df = df.write_csv(tmp_path)
-
-    read_back_pd_df = daft.read_csv(tmp_path.as_posix() + "/*.csv").to_pandas()
-    assert_df_equals(df.to_pandas(), read_back_pd_df)
-
-    assert len(pd_df) == 1
-    assert pd_df._preview.partition is None
-    pd_df.__repr__()
-    assert len(pd_df._preview.partition) == 1
-
-
-def test_csv_write_with_partitioning(tmp_path, with_morsel_size):
-    df = daft.read_csv(COOKBOOK_DATA_CSV)
-    schema = df.schema()
-    names = schema.column_names()
-    types = {}
-    for n in names:
-        types[n] = schema[n].dtype
-
-    pd_df = df.write_csv(tmp_path, partition_cols=["Borough"]).to_pandas()
-    read_back_pd_df = daft.read_csv(tmp_path.as_posix() + "/**/*.csv", schema=types).to_pandas()
-    assert_df_equals(df.to_pandas().fillna(""), read_back_pd_df.fillna(""))
-
-    assert len(pd_df) == 5
-
-
-def test_empty_csv_write(tmp_path, with_morsel_size):
-    df = daft.read_csv(COOKBOOK_DATA_CSV)
-    df = df.where(daft.lit(False))
-
-    schema = df.schema()
-    names = schema.column_names()
-    types = {}
-    for n in names:
-        types[n] = schema[n].dtype
-
-    pd_df = df.write_csv(tmp_path)
-    read_back_pd_df = daft.read_csv(tmp_path.as_posix() + "/*.csv", schema=types).to_pandas()
-    assert_df_equals(df.to_pandas().fillna(""), read_back_pd_df.fillna(""))
-
-    assert len(pd_df) == 1
-    assert pd_df._preview.partition is None
-    pd_df.__repr__()
-    assert len(pd_df._preview.partition) == 1
-
-
-def test_empty_csv_write_with_partitioning(tmp_path, with_morsel_size):
-    df = daft.read_csv(COOKBOOK_DATA_CSV)
-    df = df.where(daft.lit(False))
-
-    schema = df.schema()
-    names = schema.column_names()
-    types = {}
-    for n in names:
-        types[n] = schema[n].dtype
-
-    pd_df = df.write_csv(tmp_path, partition_cols=["Borough"])
-    assert len(pd_df) == 0
-    with pytest.raises(FileNotFoundError):
-        daft.read_csv(tmp_path.as_posix() + "/**/*.csv", schema=types).to_pandas()
-
-
-def test_csv_write_with_some_empty_partitions(tmp_path, with_morsel_size):
-    data = {"x": [1, 2, 3], "y": ["a", "b", "c"]}
-    daft.from_pydict(data).into_partitions(4).write_csv(tmp_path)
-
-    read_back = daft.read_csv(tmp_path.as_posix() + "/**/*.csv").sort("x").to_pydict()
-    assert read_back == data
-
-
-def test_csv_partitioned_write_with_some_empty_partitions(tmp_path, with_morsel_size):
-    data = {"x": [1, 2, 3], "y": ["a", "b", "c"]}
-    output_files = daft.from_pydict(data).into_partitions(4).write_csv(tmp_path, partition_cols=["x"])
-
-    assert len(output_files) == 3
-
-    read_back = daft.read_csv(tmp_path.as_posix() + "/**/*.csv").sort("x").to_pydict()
-    assert read_back == data
-
-
-@pytest.fixture()
-def smaller_json_target_filesize():
-    with daft.execution_config_ctx(json_target_filesize=1024):
-        yield
-
-
-def test_json_write_multifile(tmp_path, smaller_json_target_filesize):
-    data = {"x": list(range(1_000))}
-    df = daft.from_pydict(data)
-    df2 = df.write_json(tmp_path)
-    assert len(df2) > 1
-    read_back = daft.read_json(tmp_path.as_posix() + "/*.json").sort(by="x").to_pydict()
-    assert read_back == data
-
-
-def test_json_write_multifile_with_partitioning(tmp_path, smaller_json_target_filesize):
-    data = {"x": list(range(1_000))}
-    df = daft.from_pydict(data)
-    df2 = df.write_json(tmp_path, partition_cols=[df["x"].alias("y") % 2])
-    assert len(df2) >= 4
-    read_back = daft.read_json(tmp_path.as_posix() + "/**/*.json").sort(by="x").to_pydict()
-    assert read_back["x"] == data["x"]

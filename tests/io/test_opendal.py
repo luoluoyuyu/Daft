@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import csv as csv_mod
 from pathlib import Path
 
 import pyarrow as pa
@@ -21,17 +20,6 @@ def parquet_data(tmp_path):
     return tmp_path
 
 
-@pytest.fixture
-def csv_data(tmp_path):
-    """Create a temporary CSV file with sample data."""
-    path = tmp_path / "data.csv"
-    with open(path, "w", newline="") as f:
-        writer = csv_mod.writer(f)
-        writer.writerow(["x", "y"])
-        writer.writerows([[1, "a"], [2, "b"], [3, "c"]])
-    return tmp_path
-
-
 def _fs_io_config(root_dir: Path) -> IOConfig:
     """Create an IOConfig using OpenDAL's 'fs' (filesystem) backend."""
     return IOConfig(
@@ -47,14 +35,6 @@ def test_opendal_fs_read_parquet(parquet_data):
     """Test reading a parquet file through the OpenDAL fs backend."""
     io_config = _fs_io_config(parquet_data)
     df = daft.read_parquet("fs://localhost/data.parquet", io_config=io_config)
-    result = df.collect()
-    assert result.to_pydict() == {"x": [1, 2, 3], "y": ["a", "b", "c"]}
-
-
-def test_opendal_fs_read_csv(csv_data):
-    """Test reading a CSV file through the OpenDAL fs backend."""
-    io_config = _fs_io_config(csv_data)
-    df = daft.read_csv("fs://localhost/data.csv", io_config=io_config)
     result = df.collect()
     assert result.to_pydict() == {"x": [1, 2, 3], "y": ["a", "b", "c"]}
 
@@ -112,16 +92,6 @@ def test_opendal_fs_write_parquet(tmp_path):
     assert result.to_pydict() == {"a": [1, 2, 3], "b": ["x", "y", "z"]}
 
 
-def test_opendal_fs_write_csv(tmp_path):
-    """Test writing CSV files through the OpenDAL fs backend and reading them back."""
-    io_config = _fs_io_config(tmp_path)
-    df = daft.from_pydict({"a": [1, 2, 3], "b": ["x", "y", "z"]})
-    df.write_csv("fs://localhost/out", io_config=io_config)
-
-    result = daft.read_csv("fs://localhost/out/*.csv", io_config=io_config).sort("a").collect()
-    assert result.to_pydict() == {"a": [1, 2, 3], "b": ["x", "y", "z"]}
-
-
 def test_opendal_fs_roundtrip_parquet_multiple_columns(tmp_path):
     """Roundtrip parquet with ints, floats, strings, bools, and nulls."""
     io_config = _fs_io_config(tmp_path)
@@ -144,28 +114,6 @@ def test_opendal_fs_roundtrip_parquet_multiple_columns(tmp_path):
         "flag": [True, False, True],
         "nullable": [10, None, 30],
     }
-
-
-def test_opendal_fs_roundtrip_csv_multiple_columns(tmp_path):
-    """Roundtrip CSV with ints, floats, and strings."""
-    io_config = _fs_io_config(tmp_path)
-    df = daft.from_pydict(
-        {
-            "id": [1, 2, 3],
-            "value": [1.5, 2.5, 3.5],
-            "label": ["foo", "bar", "baz"],
-        }
-    )
-    df.write_csv("fs://localhost/out", io_config=io_config)
-
-    result = daft.read_csv("fs://localhost/out/*.csv", io_config=io_config).sort("id").collect()
-    assert result.to_pydict() == {
-        "id": [1, 2, 3],
-        "value": [1.5, 2.5, 3.5],
-        "label": ["foo", "bar", "baz"],
-    }
-
-
 def test_opendal_fs_roundtrip_parquet_empty(tmp_path):
     """Roundtrip an empty dataframe through parquet."""
     io_config = _fs_io_config(tmp_path)

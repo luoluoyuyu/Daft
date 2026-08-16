@@ -22,7 +22,6 @@ daft-cli = {path = "src/daft-cli", default-features = false}
 daft-compression = {path = "src/daft-compression", default-features = false}
 daft-context = {path = "src/daft-context", default-features = false}
 daft-core = {path = "src/daft-core", default-features = false}
-daft-csv = {path = "src/daft-csv", default-features = false}
 daft-text = {path = "src/daft-text", default-features = false}
 daft-dashboard = {path = "src/daft-dashboard", default-features = false}
 daft-distributed = {path = "src/daft-distributed", default-features = false}
@@ -40,7 +39,6 @@ daft-functions-utf8 = {path = "src/daft-functions-utf8", default-features = fals
 daft-hash = {path = "src/daft-hash", default-features = false}
 daft-image = {path = "src/daft-image", default-features = false}
 daft-io = {path = "src/daft-io", default-features = false}
-daft-json = {path = "src/daft-json", default-features = false}
 daft-local-execution = {path = "src/daft-local-execution", default-features = false}
 daft-local-plan = {path = "src/daft-local-plan", default-features = false}
 daft-logical-plan = {path = "src/daft-logical-plan", default-features = false}
@@ -79,7 +77,6 @@ python = [
   "daft-cli/python",
   "daft-context/python",
   "daft-core/python",
-  "daft-csv/python",
   "daft-text/python",
   "daft-dashboard/python",
   "daft-distributed/python",
@@ -92,7 +89,6 @@ python = [
   "daft-functions/python",
   "daft-image/python",
   "daft-io/python",
-  "daft-json/python",
   "daft-local-execution/python",
   "daft-local-plan/python",
   "daft-logical-plan/python",
@@ -188,7 +184,6 @@ members = [
   "src/daft-context",
   "src/daft-core",
   "src/daft-groupby",
-  "src/daft-csv",
   "src/daft-dashboard",
   "src/daft-dsl",
   "src/daft-ext",
@@ -206,7 +201,6 @@ members = [
   "src/daft-hash",
   "src/daft-image",
   "src/daft-io",
-  "src/daft-json",
   "src/daft-local-execution",
   "src/daft-runtime",
   "src/daft-local-plan",

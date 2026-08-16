@@ -54,13 +54,6 @@ def write(
             partition_cols=partition_cols,
             io_config=io_config,
         )
-    elif format == "csv":
-        return df.write_csv(
-            path,
-            write_mode=write_mode,
-            partition_cols=partition_cols,
-            io_config=io_config,
-        )
     else:
         raise ValueError(f"Unsupported format: {format}")
 
@@ -68,8 +61,6 @@ def write(
 def read(path: str, format: str, io_config: daft.io.IOConfig | None = None):
     if format == "parquet":
         return daft.read_parquet(path, io_config=io_config)
-    elif format == "csv":
-        return daft.read_csv(path, io_config=io_config)
     else:
         raise ValueError(f"Unsupported format: {format}")
 
@@ -129,7 +120,7 @@ def _run_append_overwrite_test(
 
 
 @pytest.mark.parametrize("write_mode", ["append", "overwrite"])
-@pytest.mark.parametrize("format", ["csv", "parquet"])
+@pytest.mark.parametrize("format", ["parquet"])
 @pytest.mark.parametrize("num_partitions", [1, 10])
 @pytest.mark.parametrize("partition_cols", [None, ["id"]])
 def test_append_and_overwrite_local(tmp_path, write_mode, format, num_partitions, partition_cols):
@@ -144,7 +135,7 @@ def test_append_and_overwrite_local(tmp_path, write_mode, format, num_partitions
 
 
 @pytest.mark.parametrize("write_mode", ["append", "overwrite"])
-@pytest.mark.parametrize("format", ["csv", "parquet"])
+@pytest.mark.parametrize("format", ["parquet"])
 @pytest.mark.parametrize("num_partitions", [1, 10])
 @pytest.mark.parametrize("partition_cols", [None, ["id"]])
 def test_append_and_overwrite_local_relative_path(
@@ -162,7 +153,7 @@ def test_append_and_overwrite_local_relative_path(
 
 @pytest.mark.integration()
 @pytest.mark.parametrize("write_mode", ["append", "overwrite"])
-@pytest.mark.parametrize("format", ["csv", "parquet"])
+@pytest.mark.parametrize("format", ["parquet"])
 @pytest.mark.parametrize("num_partitions", [1, 10])
 @pytest.mark.parametrize("partition_cols", [None, ["id"]])
 def test_append_and_overwrite_s3_minio(
@@ -235,7 +226,7 @@ def _run_write_modes_empty_test(
 
 
 @pytest.mark.parametrize("write_mode", ["append", "overwrite"])
-@pytest.mark.parametrize("format", ["csv", "parquet"])
+@pytest.mark.parametrize("format", ["parquet"])
 @pytest.mark.parametrize("partition_cols", [None, ["a"]])
 def test_write_modes_local_empty_data(tmp_path, write_mode, format, partition_cols):
     _run_write_modes_empty_test(
@@ -249,7 +240,7 @@ def test_write_modes_local_empty_data(tmp_path, write_mode, format, partition_co
 
 @pytest.mark.integration()
 @pytest.mark.parametrize("write_mode", ["append", "overwrite"])
-@pytest.mark.parametrize("format", ["csv", "parquet"])
+@pytest.mark.parametrize("format", ["parquet"])
 @pytest.mark.parametrize("partition_cols", [None, ["a"]])
 def test_write_modes_s3_minio_empty_data(
     minio_io_config,
@@ -322,7 +313,7 @@ def _run_overwrite_partitions_test(
         assert read_back[col] == expected_read_back[col]
 
 
-@pytest.mark.parametrize("format", ["csv", "parquet"])
+@pytest.mark.parametrize("format", ["parquet"])
 @pytest.mark.parametrize("existing_data, new_data, expected_read_back", OVERWRITE_PARTITION_TEST_CASES)
 def test_overwrite_partitions_local(tmp_path, format, existing_data, new_data, expected_read_back):
     _run_overwrite_partitions_test(
@@ -335,7 +326,7 @@ def test_overwrite_partitions_local(tmp_path, format, existing_data, new_data, e
     )
 
 
-@pytest.mark.parametrize("format", ["csv", "parquet"])
+@pytest.mark.parametrize("format", ["parquet"])
 @pytest.mark.parametrize("existing_data, new_data, expected_read_back", OVERWRITE_PARTITION_TEST_CASES)
 def test_overwrite_partitions_local_relative_path(
     tmp_relative_path, format, existing_data, new_data, expected_read_back
@@ -351,7 +342,7 @@ def test_overwrite_partitions_local_relative_path(
 
 
 @pytest.mark.integration()
-@pytest.mark.parametrize("format", ["csv", "parquet"])
+@pytest.mark.parametrize("format", ["parquet"])
 @pytest.mark.parametrize("existing_data, new_data, expected_read_back", OVERWRITE_PARTITION_TEST_CASES)
 def test_overwrite_partitions_s3_minio(
     minio_io_config,

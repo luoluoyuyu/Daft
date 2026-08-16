@@ -25,7 +25,7 @@ impl TryFrom<SQLFunctionArguments> for ParquetScanBuilder {
         } else if let Some(arg) = args.get_named("path") {
             try_coerce_list(arg.clone())?
         } else {
-            invalid_operation_err!("path is required for `read_json`")
+            invalid_operation_err!("path is required for `read_parquet`")
         };
 
         let infer_schema = args.try_get_named("infer_schema")?.unwrap_or(true);

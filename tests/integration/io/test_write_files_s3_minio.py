@@ -68,21 +68,3 @@ def test_writing_parquet_anonymous_mode(anonymous_minio_io_config, minio_io_conf
         )
         results.collect()
         assert len(results) == 3
-
-
-@pytest.mark.integration()
-@pytest.mark.parametrize("protocol", ["s3://", "s3a://", "s3n://"])
-def test_writing_json(minio_io_config, bucket, protocol):
-    data = {
-        "foo": [1, 2, 3],
-        "bar": ["a", "b", "c"],
-    }
-    df = daft.from_pydict(data)
-    df = df.repartition(2)
-    results = df.write_json(
-        f"{protocol}{bucket}/json-writes-{uuid.uuid4()}",
-        partition_cols=["bar"],
-        io_config=minio_io_config,
-    )
-    results.collect()
-    assert len(results) == 3

@@ -16,9 +16,9 @@ use serde::{Deserialize, Serialize};
 pub use wrappers::{PyDataSourceTaskWrapper, PyDataSourceWrapper};
 
 use crate::{
-    CsvSourceConfig, DataSourceRef, DataSourceTaskRef, FileFormatConfig, JsonSourceConfig,
-    ParquetSourceConfig, ScanSource, ScanSourceKind, ScanTask, SourceConfig, TextSourceConfig,
-    WarcSourceConfig, source::ShimSourceTask, storage_config::StorageConfig,
+    DataSourceRef, DataSourceTaskRef, FileFormatConfig, ParquetSourceConfig, ScanSource,
+    ScanSourceKind, ScanTask, SourceConfig, TextSourceConfig, WarcSourceConfig,
+    source::ShimSourceTask, storage_config::StorageConfig,
 };
 
 /// A Rust [`DataSource`] exposed as a Python object.
@@ -159,18 +159,6 @@ impl PyFileFormatConfig {
         Self(Arc::new(FileFormatConfig::Parquet(config)))
     }
 
-    /// Create a CSV file format config.
-    #[staticmethod]
-    fn from_csv_config(config: CsvSourceConfig) -> Self {
-        Self(Arc::new(FileFormatConfig::Csv(config)))
-    }
-
-    /// Create a JSON file format config.
-    #[staticmethod]
-    fn from_json_config(config: JsonSourceConfig) -> Self {
-        Self(Arc::new(FileFormatConfig::Json(config)))
-    }
-
     /// Create a Warc file format config.
     #[staticmethod]
     fn from_warc_config(config: WarcSourceConfig) -> Self {
@@ -188,14 +176,6 @@ impl PyFileFormatConfig {
     fn get_config(&self, py: Python) -> PyResult<Py<PyAny>> {
         match self.0.as_ref() {
             FileFormatConfig::Parquet(config) => config
-                .clone()
-                .into_pyobject(py)
-                .map(|c| c.unbind().into_any()),
-            FileFormatConfig::Csv(config) => config
-                .clone()
-                .into_pyobject(py)
-                .map(|c| c.unbind().into_any()),
-            FileFormatConfig::Json(config) => config
                 .clone()
                 .into_pyobject(py)
                 .map(|c| c.unbind().into_any()),

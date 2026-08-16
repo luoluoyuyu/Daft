@@ -93,10 +93,6 @@ impl RuntimeStats for WriteStats {
 pub enum WriteFormat {
     Parquet,
     PartitionedParquet,
-    Csv,
-    PartitionedCsv,
-    Json,
-    PartitionedJson,
     Iceberg,
     PartitionedIceberg,
     Deltalake,
@@ -190,10 +186,6 @@ impl BlockingSink for WriteSink {
         match &self.write_format {
             WriteFormat::Parquet => "Parquet Write".into(),
             WriteFormat::PartitionedParquet => "Partitioned Parquet Write".into(),
-            WriteFormat::Csv => "CSV Write".into(),
-            WriteFormat::PartitionedCsv => "Partitioned CSV Write".into(),
-            WriteFormat::Json => "JSON Write".into(),
-            WriteFormat::PartitionedJson => "Partitioned JSON Write".into(),
             WriteFormat::Iceberg => "Iceberg Write".into(),
             WriteFormat::PartitionedIceberg => "Partitioned Iceberg Write".into(),
             WriteFormat::Deltalake => "DeltaLake Write".into(),

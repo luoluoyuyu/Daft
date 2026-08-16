@@ -4,7 +4,7 @@ import uuid
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
-from daft.dependencies import pa, pacsv, pafs, pq
+from daft.dependencies import pa, pafs, pq
 from daft.filesystem import (
     _resolve_paths_and_filesystem,
     get_protocol_from_path,
@@ -173,98 +173,6 @@ class ParquetFileWriter(FileWriterBase):
         if self.partition_values is not None:
             for column in self.partition_values.columns():
                 metadata[column.name()] = column
-        return RecordBatch.from_pydict(metadata)
-
-
-class CSVFileWriter(FileWriterBase):
-    def __init__(
-        self,
-        root_dir: str,
-        file_idx: int,
-        partition_values: RecordBatch | None = None,
-        io_config: IOConfig | None = None,
-        delimiter: str | None = None,
-        include_header: bool | None = True,
-        date_format: str | None = None,
-        timestamp_format: str | None = None,
-    ):
-        super().__init__(
-            root_dir=root_dir,
-            file_idx=file_idx,
-            file_format="csv",
-            partition_values=partition_values,
-            io_config=io_config,
-        )
-        self.file_handle = None
-        self.current_writer: pacsv.CSVWriter | None = None
-        self.is_closed = False
-        self.delimiter = delimiter
-        self.include_header = True if include_header is None else include_header
-        self.date_format = date_format
-        self.timestamp_format = timestamp_format
-
-    def _create_writer(self, schema: pa.Schema) -> pacsv.CSVWriter:
-        self.file_handle = self.fs.open_output_stream(self.full_path)
-        write_options = pacsv.WriteOptions(delimiter=self.delimiter or ",", include_header=self.include_header)
-        return pacsv.CSVWriter(self.file_handle, schema, write_options=write_options)
-
-    def _apply_custom_formatting(self, arrow_table: pa.Table) -> pa.Table:
-        """Apply custom date/timestamp formatting to the table before writing."""
-        if self.date_format is None and self.timestamp_format is None:
-            return arrow_table
-
-        import pyarrow.compute as pc
-
-        new_columns = []
-        new_fields = []
-
-        for i, field in enumerate(arrow_table.schema):
-            column = arrow_table.column(i)
-
-            if pa.types.is_date(field.type) and self.date_format is not None:
-                # Convert date to string with custom format
-                formatted = pc.strftime(column, format=self.date_format)
-                new_columns.append(formatted)
-                new_fields.append(pa.field(field.name, pa.large_string(), nullable=field.nullable))
-            elif pa.types.is_timestamp(field.type) and self.timestamp_format is not None:
-                # Convert timestamp to string with custom format
-                formatted = pc.strftime(column, format=self.timestamp_format)
-                new_columns.append(formatted)
-                new_fields.append(pa.field(field.name, pa.large_string(), nullable=field.nullable))
-            else:
-                new_columns.append(column)
-                new_fields.append(field)
-
-        new_schema = pa.schema(new_fields)
-        return pa.table(dict(zip(arrow_table.column_names, new_columns)), schema=new_schema)
-
-    def write(self, table: MicroPartition) -> int:
-        assert not self.is_closed, "Cannot write to a closed CSVFileWriter"
-        arrow_table = table.to_arrow()
-
-        # Apply custom date/timestamp formatting if specified
-        formatted_table = self._apply_custom_formatting(arrow_table)
-
-        if self.current_writer is None:
-            self.current_writer = self._create_writer(formatted_table.schema)
-        self.current_writer.write_table(formatted_table)
-
-        assert self.file_handle is not None  # We should have created the file handle in _create_writer
-        current_position = self.file_handle.tell()
-        bytes_written = current_position - self.position
-        self.position = current_position
-        return bytes_written
-
-    def close(self) -> RecordBatch:
-        if self.current_writer is not None:
-            self.current_writer.close()
-
-        self.is_closed = True
-        metadata = {"path": Series.from_pylist([self.full_path])}
-        if self.partition_values is not None:
-            for column in self.partition_values.columns():
-                metadata[column.name()] = column
-
         return RecordBatch.from_pydict(metadata)
 
 

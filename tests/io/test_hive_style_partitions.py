@@ -67,7 +67,7 @@ def assert_tables_equal(daft_recordbatch, pa_table):
     ],
 )
 # Pyarrow does not currently support writing partitioned JSON.
-@pytest.mark.parametrize("file_format", ["csv", "parquet"])
+@pytest.mark.parametrize("file_format", ["parquet"])
 @pytest.mark.parametrize("filter", [True, False])
 def test_hive_pyarrow_daft_compatibility(tmpdir, partition_by, file_format, filter):
     ds.write_dataset(
@@ -79,34 +79,14 @@ def test_hive_pyarrow_daft_compatibility(tmpdir, partition_by, file_format, filt
 
     glob_path = os.path.join(tmpdir, "**")
     daft_df = ()
-    if file_format == "csv":
-        daft_df = daft.read_csv(
-            glob_path,
-            schema={
-                "nullable_str": daft.DataType.string(),
-                "nullable_int": daft.DataType.int64(),
-            },
-            hive_partitioning=True,
-        )
-
-    if file_format == "json":
-        daft_df = daft.read_json(
-            glob_path,
-            schema={
-                "nullable_str": daft.DataType.string(),
-                "nullable_int": daft.DataType.int64(),
-            },
-            hive_partitioning=True,
-        )
-    if file_format == "parquet":
-        daft_df = daft.read_parquet(
-            glob_path,
-            schema={
-                "nullable_str": daft.DataType.string(),
-                "nullable_int": daft.DataType.int64(),
-            },
-            hive_partitioning=True,
-        )
+    daft_df = daft.read_parquet(
+        glob_path,
+        schema={
+            "nullable_str": daft.DataType.string(),
+            "nullable_int": daft.DataType.int64(),
+        },
+        hive_partitioning=True,
+    )
     pa_ds = ds.dataset(
         tmpdir,
         format=file_format,
@@ -135,8 +115,7 @@ def test_hive_pyarrow_daft_compatibility(tmpdir, partition_by, file_format, filt
         ["nullable_str", "nullable_int"],  # Test multiple partition columns with nulls.
     ],
 )
-# TODO(desmond): Daft does not currently have a write_json API.
-@pytest.mark.parametrize("file_format", ["csv", "parquet"])
+@pytest.mark.parametrize("file_format", ["parquet"])
 @pytest.mark.parametrize("filter", [True, False])
 def test_hive_daft_roundtrip(tmpdir, partition_by, file_format, filter):
     filepath = f"{tmpdir}"
@@ -144,48 +123,15 @@ def test_hive_daft_roundtrip(tmpdir, partition_by, file_format, filter):
 
     glob_path = os.path.join(tmpdir, "**")
     target = ()
-    if file_format == "csv":
-        source.write_csv(filepath, partition_cols=[daft.col(col) for col in partition_by])
-        target = daft.read_csv(
-            glob_path,
-            schema={
-                "nullable_str": daft.DataType.string(),
-                "nullable_int": daft.DataType.int64(),
-            },
-            hive_partitioning=True,
-        )
-        # TODO(desmond): Daft has an inconsistency with handling null string columns when using
-        # `from_arrow` vs `read_csv`. For now we read back an unpartitioned CSV table to check the
-        # result against.
-        plain_filepath = f"{tmpdir}-plain"
-        source.write_csv(plain_filepath)
-        source = daft.read_csv(
-            f"{plain_filepath}/**",
-            schema={
-                "nullable_str": daft.DataType.string(),
-                "nullable_int": daft.DataType.int64(),
-            },
-        )
-    if file_format == "json":
-        source.write_json(filepath, partition_cols=[daft.col(col) for col in partition_by])
-        target = daft.read_json(
-            glob_path,
-            schema={
-                "nullable_str": daft.DataType.string(),
-                "nullable_int": daft.DataType.int64(),
-            },
-            hive_partitioning=True,
-        )
-    if file_format == "parquet":
-        source.write_parquet(filepath, partition_cols=[daft.col(col) for col in partition_by])
-        target = daft.read_parquet(
-            glob_path,
-            schema={
-                "nullable_str": daft.DataType.string(),
-                "nullable_int": daft.DataType.int64(),
-            },
-            hive_partitioning=True,
-        )
+    source.write_parquet(filepath, partition_cols=[daft.col(col) for col in partition_by])
+    target = daft.read_parquet(
+        glob_path,
+        schema={
+            "nullable_str": daft.DataType.string(),
+            "nullable_int": daft.DataType.int64(),
+        },
+        hive_partitioning=True,
+    )
     if filter:
         first_col = partition_by[0]
         sample_value = SAMPLE_DATA[first_col][0].as_py()

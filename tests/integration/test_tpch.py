@@ -3,10 +3,9 @@ from __future__ import annotations
 import sys
 
 import pytest
-from fsspec.implementations.local import LocalFileSystem
 
 import daft
-from benchmarking.tpch import answers, data_generation
+from benchmarking.tpch import answers
 
 if sys.platform == "win32":
     pytest.skip(allow_module_level=True)
@@ -14,32 +13,10 @@ if sys.platform == "win32":
 
 @pytest.fixture(scope="module")
 def get_df(gen_tpch):
-    csv_files_location, _ = gen_tpch
+    parquet_files_location, _ = gen_tpch
 
     def _get_df(tbl_name: str):
-        # TODO (jay): Perhaps we should use Parquet here instead similar to benchmarking and get rid of this CSV parsing stuff?
-        local_fs = LocalFileSystem()
-        # Used chunked files if found
-        nonchunked_filepath = f"{csv_files_location}/{tbl_name}.tbl"
-        chunked_filepath = nonchunked_filepath + ".*"
-        try:
-            local_fs.expand_path(chunked_filepath)
-            fp = chunked_filepath
-        except FileNotFoundError:
-            fp = nonchunked_filepath
-
-        df = daft.read_csv(
-            fp,
-            has_headers=False,
-            delimiter="|",
-        )
-        df = df.select(
-            *[
-                daft.col(autoname).alias(colname)
-                for autoname, colname in zip(df.column_names, data_generation.SCHEMA[tbl_name])
-            ]
-        )
-        return df
+        return daft.read_parquet(f"{parquet_files_location}/{tbl_name}/*")
 
     return _get_df
 

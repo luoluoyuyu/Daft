@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 import shutil
 import socket
@@ -111,18 +110,19 @@ def test_rust_runtime_native_path_does_not_need_python(rust_runtime) -> None:
     endpoint, token = rust_runtime
     client = RuntimeClient(endpoint, token=token)
 
-    json_path = Path(__file__).parent / "data.json"
-    json_path.parent.mkdir(exist_ok=True)
-    json_path.write_text(
-        "\n".join(
-            json.dumps(row)
-            for row in [
-                {"id": 1, "name": "a"},
-                {"id": 2, "name": "b"},
-                {"id": 3, "name": "c"},
-            ]
-        )
-        + "\n"
+    import pyarrow as pa
+    import pyarrow.parquet as papq
+
+    parquet_path = Path(__file__).parent / "data.parquet"
+    parquet_path.parent.mkdir(exist_ok=True)
+    papq.write_table(
+        pa.table(
+            {
+                "id": [1, 2, 3],
+                "name": ["a", "b", "c"],
+            }
+        ),
+        parquet_path,
     )
 
     # In-memory source + filter/projection/select (no UDF).
@@ -137,7 +137,7 @@ def test_rust_runtime_native_path_does_not_need_python(rust_runtime) -> None:
     assert result[0].to_pydict() == {"id": [2, 3], "name": ["b", "c"]}
 
     # File scan + join against an in-memory table (no UDF).
-    left = daft.read_json(str(json_path))
+    left = daft.read_parquet(str(parquet_path))
     right = daft.from_pydict({"id": [1, 2, 3], "score": [0.5, 0.6, 0.7]})
     joined = left.join(right, on="id")
     plan2, execution2, partition_sets2 = serialize_plan_parts(joined)

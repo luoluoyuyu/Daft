@@ -6,8 +6,6 @@ pub(crate) fn file_format_to_proto(format: FileFormat) -> proto::FileFormat {
     use proto::FileFormat as P;
     match format {
         FileFormat::Parquet => P::Parquet,
-        FileFormat::Csv => P::Csv,
-        FileFormat::Json => P::Json,
         FileFormat::Warc => P::Warc,
         FileFormat::Text => P::Text,
     }
@@ -17,8 +15,6 @@ pub(crate) fn file_format_from_proto(format: proto::FileFormat) -> DaftResult<Fi
     use proto::FileFormat as P;
     match format {
         P::Parquet => Ok(FileFormat::Parquet),
-        P::Csv => Ok(FileFormat::Csv),
-        P::Json => Ok(FileFormat::Json),
         P::Warc => Ok(FileFormat::Warc),
         P::Text => Ok(FileFormat::Text),
         P::Unspecified => invalid("FileFormat::Unspecified"),
@@ -47,22 +43,9 @@ pub(crate) fn write_mode_from_proto(mode: proto::WriteMode) -> DaftResult<WriteM
 pub(crate) fn format_sink_option_to_proto(
     option: &crate::sink_info::FormatSinkOption,
 ) -> proto::FormatSinkOption {
-    use crate::sink_info::{CsvFormatOption, FormatSinkOption, JsonFormatOption};
+    use crate::sink_info::FormatSinkOption;
     use proto::format_sink_option::Format;
     let format = match option {
-        FormatSinkOption::Csv(csv) => Format::Csv(proto::CsvFormatOption {
-            delimiter: csv.delimiter.map(|b| b as u32),
-            quote: csv.quote.map(|b| b as u32),
-            escape: csv.escape.map(|b| b as u32),
-            header: csv.header,
-            date_format: csv.date_format.clone(),
-            timestamp_format: csv.timestamp_format.clone(),
-        }),
-        FormatSinkOption::Json(json) => Format::Json(proto::JsonFormatOption {
-            ignore_null_fields: json.ignore_null_fields,
-            date_format: json.date_format.clone(),
-            timestamp_format: json.timestamp_format.clone(),
-        }),
         FormatSinkOption::Parquet(_) => Format::Parquet(true),
     };
     proto::FormatSinkOption {
@@ -73,22 +56,9 @@ pub(crate) fn format_sink_option_to_proto(
 pub(crate) fn format_sink_option_from_proto(
     option: proto::FormatSinkOption,
 ) -> DaftResult<crate::sink_info::FormatSinkOption> {
-    use crate::sink_info::{CsvFormatOption, FormatSinkOption, JsonFormatOption};
+    use crate::sink_info::FormatSinkOption;
     use proto::format_sink_option::Format;
     match required(option.format, "FormatSinkOption.format")? {
-        Format::Csv(csv) => Ok(FormatSinkOption::Csv(CsvFormatOption {
-            delimiter: csv.delimiter.map(|b| b as u8),
-            quote: csv.quote.map(|b| b as u8),
-            escape: csv.escape.map(|b| b as u8),
-            header: csv.header,
-            date_format: csv.date_format,
-            timestamp_format: csv.timestamp_format,
-        })),
-        Format::Json(json) => Ok(FormatSinkOption::Json(JsonFormatOption {
-            ignore_null_fields: json.ignore_null_fields,
-            date_format: json.date_format,
-            timestamp_format: json.timestamp_format,
-        })),
         Format::Parquet(_) => Ok(FormatSinkOption::Parquet(
             crate::sink_info::ParquetFormatOption {},
         )),

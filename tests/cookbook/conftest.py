@@ -23,19 +23,14 @@ COLUMNS = [
 CsvPathAndColumns = tuple[str, list[str]]
 
 
-@pytest.fixture(scope="function", params=["parquet", "csv"])
-def daft_df(request, tmp_path):
-    if request.param == "csv":
-        df = daft.read_csv(COOKBOOK_DATA_CSV)
-    elif request.param == "parquet":
-        import pyarrow.csv as pacsv
-        import pyarrow.parquet as papq
+@pytest.fixture(scope="function")
+def daft_df(tmp_path):
+    import pyarrow.csv as pacsv
+    import pyarrow.parquet as papq
 
-        tmp_file = tmp_path / str(uuid.uuid4())
-        papq.write_table(pacsv.read_csv(COOKBOOK_DATA_CSV), str(tmp_file))
-        df = daft.read_parquet(str(tmp_file))
-    else:
-        assert False, "Can only handle CSV/Parquet formats"
+    tmp_file = tmp_path / str(uuid.uuid4())
+    papq.write_table(pacsv.read_csv(COOKBOOK_DATA_CSV), str(tmp_file))
+    df = daft.read_parquet(str(tmp_file))
     return df.select(*[col(c) for c in COLUMNS])
 
 

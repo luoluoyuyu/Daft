@@ -101,10 +101,6 @@ impl PyDaftExecutionConfig {
         parquet_target_filesize=None,
         parquet_target_row_group_size=None,
         parquet_inflation_factor=None,
-        csv_target_filesize=None,
-        csv_inflation_factor=None,
-        json_target_filesize=None,
-        json_inflation_factor=None,
         text_inflation_factor=None,
         shuffle_aggregation_default_partitions=None,
         partial_aggregation_threshold=None,
@@ -139,10 +135,6 @@ impl PyDaftExecutionConfig {
         parquet_target_filesize: Option<usize>,
         parquet_target_row_group_size: Option<usize>,
         parquet_inflation_factor: Option<f64>,
-        csv_target_filesize: Option<usize>,
-        csv_inflation_factor: Option<f64>,
-        json_target_filesize: Option<usize>,
-        json_inflation_factor: Option<f64>,
         text_inflation_factor: Option<f64>,
         shuffle_aggregation_default_partitions: Option<usize>,
         partial_aggregation_threshold: Option<usize>,
@@ -200,18 +192,6 @@ impl PyDaftExecutionConfig {
         }
         if let Some(parquet_inflation_factor) = parquet_inflation_factor {
             config.parquet_inflation_factor = parquet_inflation_factor;
-        }
-        if let Some(csv_target_filesize) = csv_target_filesize {
-            config.csv_target_filesize = csv_target_filesize;
-        }
-        if let Some(csv_inflation_factor) = csv_inflation_factor {
-            config.csv_inflation_factor = csv_inflation_factor;
-        }
-        if let Some(json_target_filesize) = json_target_filesize {
-            config.json_target_filesize = json_target_filesize;
-        }
-        if let Some(json_inflation_factor) = json_inflation_factor {
-            config.json_inflation_factor = json_inflation_factor;
         }
         if let Some(text_inflation_factor) = text_inflation_factor {
             config.text_inflation_factor = text_inflation_factor;
@@ -370,26 +350,6 @@ impl PyDaftExecutionConfig {
     #[getter]
     fn get_parquet_inflation_factor(&self) -> PyResult<f64> {
         Ok(self.config.parquet_inflation_factor)
-    }
-
-    #[getter]
-    fn get_csv_target_filesize(&self) -> PyResult<usize> {
-        Ok(self.config.csv_target_filesize)
-    }
-
-    #[getter]
-    fn get_csv_inflation_factor(&self) -> PyResult<f64> {
-        Ok(self.config.csv_inflation_factor)
-    }
-
-    #[getter]
-    fn get_json_target_filesize(&self) -> PyResult<usize> {
-        Ok(self.config.json_target_filesize)
-    }
-
-    #[getter]
-    fn get_json_inflation_factor(&self) -> PyResult<f64> {
-        Ok(self.config.json_inflation_factor)
     }
 
     #[getter]

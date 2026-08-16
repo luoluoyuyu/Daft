@@ -4,7 +4,6 @@ use common_error::{DaftError, DaftResult};
 use common_file_formats::FileFormat;
 use common_runtime::RuntimeRef;
 use daft_core::{prelude::Utf8Array, series::IntoSeries};
-use daft_csv::CsvParseOptions;
 use daft_dsl::expr::bound_expr::BoundExpr;
 use daft_io::{FileMetadata, FileType, IOClient, IOStatsContext, IOStatsRef, parse_url};
 use daft_parquet::read::ParquetSchemaInferenceOptions;
@@ -19,7 +18,7 @@ use futures::{Stream, StreamExt, TryStreamExt, stream::BoxStream};
 use snafu::Snafu;
 
 use crate::{
-    ChunkSpec, CsvSourceConfig, FileFormatConfig, ParquetSourceConfig, PartitionField, Pushdowns,
+    ChunkSpec, FileFormatConfig, ParquetSourceConfig, PartitionField, Pushdowns,
     ScanOperator, ScanSource, ScanSourceKind, ScanTask, ScanTaskRef, SourceConfig,
     hive::{hive_partitions_to_fields, hive_partitions_to_series, parse_hive_partitioning},
     storage_config::StorageConfig,
@@ -226,96 +225,6 @@ impl GlobScanOperator {
                         },
                     ));
                     (schema, first_metadata, first_filepath)
-                }
-                FileFormatConfig::Csv(CsvSourceConfig {
-                    delimiter,
-                    has_headers,
-                    double_quote,
-                    quote,
-                    escape_char,
-                    comment,
-                    allow_variable_columns,
-                    ..
-                }) => {
-                    let (schema, _) = daft_csv::metadata::read_csv_schema(
-                        first_filepath.as_str(),
-                        Some(CsvParseOptions::new_with_defaults(
-                            *has_headers,
-                            *delimiter,
-                            *double_quote,
-                            *quote,
-                            *allow_variable_columns,
-                            *escape_char,
-                            *comment,
-                        )?),
-                        None,
-                        io_client.clone(),
-                        Some(io_stats.clone()),
-                    )
-                    .await?;
-                    (schema, None, first_filepath)
-                }
-                FileFormatConfig::Json(json_config) => {
-                    let parse_options =
-                        daft_json::JsonParseOptions::new_internal(json_config.skip_empty_files);
-
-                    // First attempt reading schema from first_filepath.
-                    let first_schema = daft_json::schema::read_json_schema(
-                        first_filepath.as_str(),
-                        Some(parse_options.clone()),
-                        None,
-                        io_client.clone(),
-                        Some(io_stats.clone()),
-                    )
-                    .await?;
-
-                    if json_config.skip_empty_files && first_schema.fields().is_empty() {
-                        // If first file is empty and skipping is enabled, re-run full glob to find first non-empty JSON file.
-                        let mut stream = run_glob(
-                            first_glob_path.clone(),
-                            None,
-                            io_client.clone(),
-                            Some(io_stats.clone()),
-                            file_format,
-                        )
-                        .await?;
-                        let mut chosen_schema = None;
-                        let mut chosen_path = None;
-                        while let Some(fm) = stream.next().await {
-                            let FileMetadata { filepath, .. } = fm?;
-                            let schema = daft_json::schema::read_json_schema(
-                                filepath.as_str(),
-                                Some(parse_options.clone()),
-                                None,
-                                io_client.clone(),
-                                Some(io_stats.clone()),
-                            )
-                            .await?;
-                            if !schema.fields().is_empty() {
-                                chosen_schema = Some(schema);
-                                chosen_path = Some(filepath);
-                                break;
-                            }
-                        }
-                        let chosen_path = match chosen_path {
-                            Some(p) => p,
-                            None => {
-                                // If all matched files are empty, treat as no match.
-                                return Err(Error::GlobNoMatch {
-                                    glob_path: first_glob_path.clone(),
-                                }
-                                .into());
-                            }
-                        };
-                        (
-                            chosen_schema.expect("schema must be set when chosen_path is Some"),
-                            None,
-                            chosen_path,
-                        )
-                    } else {
-                        // Use schema inferred from first file.
-                        (first_schema, None, first_filepath)
-                    }
                 }
                 FileFormatConfig::Warc(_) => {
                     return Err(DaftError::ValueError(

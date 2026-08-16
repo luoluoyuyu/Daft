@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-import io
-
 import pyarrow as pa
 import pyarrow.parquet as papq
 import pytest
 
 import daft
-from daft.context import execution_config_ctx
 from daft.daft import testing as native_testing_utils
 from daft.recordbatch.micropartition import MicroPartition
 
@@ -155,69 +152,3 @@ def test_canonical_files_in_s3(path):
         get_scantask_estimated_size(path, size_on_disk),
         get_actual_size(path),
     )
-
-
-@pytest.mark.parametrize(
-    "inflation_factor,expected_size_bytes",
-    [
-        (1.0, "Approx size bytes = 174.70 K"),
-        (2.0, "Approx size bytes = 349.40 K"),
-        (3.0, "Approx size bytes = 524.11 K"),
-    ],
-)
-def test_csv_config_affects_estimations(tmpdir, inflation_factor, expected_size_bytes):
-    """Test that csv inflation factor affects size estimations."""
-    import csv
-
-    # Create test data
-    data = [f"test_string_{i}" for i in range(10000)]
-
-    # Create csv file
-    file_path = tmpdir / "test_config.csv"
-    with open(file_path, "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["foo"])  # header
-        for value in data:
-            writer.writerow([value])
-
-    # Test with the specified inflation factor
-    with execution_config_ctx(csv_inflation_factor=inflation_factor):
-        df = daft.read_csv(str(file_path))
-        string_io = io.StringIO()
-        df.explain(True, file=string_io)
-        explain_output = string_io.getvalue()
-
-    # Assert the expected values
-    assert expected_size_bytes in explain_output
-
-
-@pytest.mark.parametrize(
-    "inflation_factor,expected_size_bytes",
-    [
-        (1.0, "Approx size bytes = 272.35 K"),
-        (2.0, "Approx size bytes = 544.71 K"),
-        (3.0, "Approx size bytes = 817.06 K"),
-    ],
-)
-def test_json_config_affects_estimations(tmpdir, inflation_factor, expected_size_bytes):
-    """Test that json inflation factor affects size estimations."""
-    import json
-
-    # Create test data
-    data = [f"test_string_{i}" for i in range(10000)]
-
-    # Create a newline delimited JSON file
-    file_path = tmpdir / "test_config.json"
-    with open(file_path, "w") as f:
-        for value in data:
-            f.write(json.dumps({"foo": value}) + "\n")
-
-    # Test with the specified inflation factor
-    with execution_config_ctx(json_inflation_factor=inflation_factor):
-        df = daft.read_json(str(file_path))
-        string_io = io.StringIO()
-        df.explain(True, file=string_io)
-        explain_output = string_io.getvalue()
-
-    # Assert the expected values
-    assert expected_size_bytes in explain_output

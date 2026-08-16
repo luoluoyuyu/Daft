@@ -14,21 +14,20 @@ from tests.conftest import assert_df_equals
 
 
 @pytest.mark.integration()
-@pytest.mark.parametrize("source", ["pydict", "csv", "json"])
+@pytest.mark.parametrize("source", ["pydict", "parquet"])
 def test_write_sql_from_sources(test_db, tmp_path, source):
     table_name = f"write_test_source_{uuid.uuid4().hex}"
     base_data = {"id": [1, 2], "name": ["A", "B"]}
 
     if source == "pydict":
         df = daft.from_pydict(base_data)
-    elif source == "csv":
-        csv_path = tmp_path / "input.csv"
-        csv_path.write_text("id,name\n1,A\n2,B\n", encoding="utf-8")
-        df = daft.read_csv(str(csv_path))
-    elif source == "json":
-        json_path = tmp_path / "input.json"
-        json_path.write_text('[{"id": 1, "name": "A"}, {"id": 2, "name": "B"}]', encoding="utf-8")
-        df = daft.read_json(str(json_path))
+    elif source == "parquet":
+        import pyarrow as pa
+        import pyarrow.parquet as papq
+
+        parquet_path = tmp_path / "input.parquet"
+        papq.write_table(pa.table(base_data), parquet_path)
+        df = daft.read_parquet(str(parquet_path))
     else:
         raise ValueError(f"Unsupported source type: {source}")
 

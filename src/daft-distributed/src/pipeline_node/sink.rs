@@ -95,10 +95,6 @@ fn sink_display_name(sink_info: &SinkInfo<BoundExpr>) -> String {
             match (file_format, partitioned) {
                 (FileFormat::Parquet, true) => "Partitioned Parquet Write".to_string(),
                 (FileFormat::Parquet, false) => "Parquet Write".to_string(),
-                (FileFormat::Csv, true) => "Partitioned CSV Write".to_string(),
-                (FileFormat::Csv, false) => "CSV Write".to_string(),
-                (FileFormat::Json, true) => "Partitioned JSON Write".to_string(),
-                (FileFormat::Json, false) => "JSON Write".to_string(),
                 (_, _) => "Write".to_string(),
             }
         }

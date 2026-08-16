@@ -12,42 +12,11 @@ from tests.cookbook.assets import COOKBOOK_DATA_CSV
 
 
 def test_load(daft_df, service_requests_csv_pd_df, repartition_nparts, with_morsel_size):
-    """Loading data from a CSV or Parquet works."""
+    """Loading data from Parquet works."""
     pd_slice = service_requests_csv_pd_df
     daft_slice = daft_df.repartition(repartition_nparts)
     daft_pd_df = daft_slice.to_pandas()
     assert_df_equals(daft_pd_df, pd_slice)
-
-
-def test_load_csv_no_headers(tmp_path: pathlib.Path):
-    """Generate a default set of headers `f0, f1, ... f{n}` when loading a CSV that has no headers."""
-    csv = tmp_path / "headerless_iris.csv"
-    csv.write_text("\n".join(pathlib.Path(COOKBOOK_DATA_CSV).read_text().split("\n")[1:]))
-    daft_df = daft.read_csv(str(csv), has_headers=False)
-    pd_df = pd.read_csv(csv, header=None, keep_default_na=False)
-    pd_df.columns = [f"column_{i}" for i in range(1, 53)]
-    daft_pd_df = daft_df.to_pandas()
-    assert list(daft_pd_df.columns) == list(pd_df.columns)
-
-
-def test_load_csv_tab_delimited(tmp_path: pathlib.Path):
-    """Generate a default set of headers `col_0, col_1, ... col_{n}` when loading a CSV that has no headers."""
-    csv = tmp_path / "headerless_iris.csv"
-    csv.write_text(pathlib.Path(COOKBOOK_DATA_CSV).read_text().replace(",", "\t"))
-    daft_df = daft.read_csv(str(csv), delimiter="\t")
-    pd_df = pd.read_csv(csv, delimiter="\t")
-    daft_pd_df = daft_df.to_pandas()
-    assert list(daft_pd_df.columns) == list(pd_df.columns)
-
-
-def test_load_json(tmp_path: pathlib.Path):
-    """Generate a default set of headers `col_0, col_1, ... col_{n}` when loading a JSON file."""
-    json_file = tmp_path / "iris.json"
-    pd_df = pd.read_csv(COOKBOOK_DATA_CSV)
-    pd_df.to_json(json_file, lines=True, orient="records")
-    daft_df = daft.read_json(str(json_file))
-    daft_pd_df = daft_df.to_pandas()
-    assert list(daft_pd_df.columns) == list(pd_df.columns)
 
 
 def test_load_pydict():

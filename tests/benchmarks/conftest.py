@@ -93,28 +93,7 @@ def get_df(gen_tpch, request):
     source_type = request.param
 
     def _get_df(tbl_name: str):
-        if source_type == "csv":
-            local_fs = LocalFileSystem()
-            nonchunked_filepath = f"{csv_files_location}/{tbl_name}.tbl"
-            chunked_filepath = nonchunked_filepath + ".*"
-            try:
-                local_fs.expand_path(chunked_filepath)
-                fp = chunked_filepath
-            except FileNotFoundError:
-                fp = nonchunked_filepath
-
-            df = daft.read_csv(
-                fp,
-                has_headers=False,
-                delimiter="|",
-            )
-            df = df.select(
-                *[
-                    daft.col(autoname).alias(colname)
-                    for autoname, colname in zip(df.column_names, data_generation.SCHEMA[tbl_name])
-                ]
-            )
-        elif source_type == "parquet":
+        if source_type == "parquet":
             fp = f"{parquet_files_location}/{tbl_name}/*"
             df = daft.read_parquet(fp)
         elif source_type == "in-memory":

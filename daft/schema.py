@@ -3,11 +3,9 @@ from __future__ import annotations
 from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
-from daft.daft import CsvParseOptions, JsonParseOptions, PySchema
+from daft.daft import PySchema
 from daft.daft import PyField as _PyField
 from daft.daft import PySchema as _PySchema
-from daft.daft import read_csv_schema as _read_csv_schema
-from daft.daft import read_json_schema as _read_json_schema
 from daft.daft import read_parquet_schema as _read_parquet_schema
 from daft.datatype import DataType, TimeUnit, _ensure_registered_super_ext_type
 
@@ -259,61 +257,5 @@ class Schema:
                 io_config=io_config,
                 multithreaded_io=multithreaded_io,
                 coerce_int96_timestamp_unit=coerce_int96_timestamp_unit._timeunit,
-            )
-        )
-
-    @classmethod
-    def from_csv(
-        cls,
-        path: str,
-        parse_options: CsvParseOptions | None = None,
-        io_config: IOConfig | None = None,
-        multithreaded_io: bool | None = None,
-    ) -> Schema:
-        """Creates a Schema from a CSV file.
-
-        Args:
-            path (str): Path to the CSV file.
-            parse_options (CsvParseOptions | None): Options for parsing the CSV file.
-            io_config (IOConfig | None): IO configuration for reading the file.
-            multithreaded_io (bool | None): Whether to use multithreaded IO.
-
-        Returns:
-            Schema: A Schema object representing the CSV file.
-        """
-        return Schema._from_pyschema(
-            _read_csv_schema(
-                uri=path,
-                parse_options=parse_options,
-                io_config=io_config,
-                multithreaded_io=multithreaded_io,
-            )
-        )
-
-    @classmethod
-    def from_json(
-        cls,
-        path: str,
-        parse_options: JsonParseOptions | None = None,
-        io_config: IOConfig | None = None,
-        multithreaded_io: bool | None = None,
-    ) -> Schema:
-        """Creates a Schema from a JSON file.
-
-        Args:
-            path (str): Path to the JSON file.
-            parse_options (JsonParseOptions | None): Options for parsing the JSON file.
-            io_config (IOConfig | None): IO configuration for reading the file.
-            multithreaded_io (bool | None): Whether to use multithreaded IO.
-
-        Returns:
-            Schema: A Schema object representing the JSON file.
-        """
-        return Schema._from_pyschema(
-            _read_json_schema(
-                uri=path,
-                parse_options=parse_options,
-                io_config=io_config,
-                multithreaded_io=multithreaded_io,
             )
         )

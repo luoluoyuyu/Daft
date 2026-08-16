@@ -27,7 +27,6 @@ from daft.daft import (
     IOConfig,
     JoinStrategy,
     JoinType,
-    PyFormatSinkOption,
     WriteMode,
 )
 from daft.dataframe.display import MermaidOptions
@@ -947,7 +946,7 @@ class DataFrame:
             >>> df.write_parquet("output_dir", write_mode="overwrite")  # doctest: +SKIP
 
         Tip:
-            See also [`df.write_csv()`][daft.DataFrame.write_csv] and [`df.write_json()`][daft.DataFrame.write_json]
+            See also [`df.write_iceberg()`][daft.DataFrame.write_iceberg]
             Other formats for writing DataFrames
         """
         if write_mode not in ["append", "overwrite", "overwrite-partitions"]:
@@ -970,223 +969,6 @@ class DataFrame:
             write_success_file=write_success_file,
             file_format=FileFormat.Parquet,
             compression=compression,
-            io_config=io_config,
-        )
-        # Block and write, then retrieve data
-        write_df = DataFrame(builder)
-        write_df.collect()
-        assert write_df._result is not None
-
-        # Populate and return a new disconnected DataFrame
-        # Keep the original logical plan so explain() can still show upstream operators
-        # (e.g. filters/projections before the write), instead of collapsing to an
-        # in-memory source after collect() caches the result.
-        result_df = DataFrame(write_df._get_current_builder())
-        result_df._result_cache = write_df._result_cache
-        result_df._preview = write_df._preview
-        result_df._metadata = write_df._metadata
-        return result_df
-
-    @DataframePublicAPI
-    def write_csv(
-        self,
-        root_dir: str | pathlib.Path,
-        write_mode: Literal["append", "overwrite", "overwrite-partitions"] = "append",
-        partition_cols: list[ColumnInputType] | None = None,
-        io_config: IOConfig | None = None,
-        delimiter: str | None = None,
-        quote: str | None = None,
-        escape: str | None = None,
-        header: bool | None = True,
-        date_format: str | None = None,
-        timestamp_format: str | None = None,
-    ) -> "DataFrame":
-        r"""Writes the DataFrame as CSV files, returning a new DataFrame with paths to the files that were written.
-
-        Files will be written to `<root_dir>/*` with randomly generated UUIDs as the file names.
-
-        Args:
-            root_dir (str): root file path to write CSV files to.
-            write_mode (str, optional): Operation mode of the write. `append` will add new data, `overwrite` will replace the contents of the root directory with new data. `overwrite-partitions` will replace only the contents in the partitions that are being written to. Defaults to "append".
-            partition_cols (Optional[List[ColumnInputType]], optional): How to subpartition each partition further. Defaults to None.
-            io_config (Optional[IOConfig], optional): configurations to use when interacting with remote storage.
-            delimiter (Optional[str], optional): Single-character field delimiter (default `,`).
-            quote (Optional[str], optional): Single-character quote used around fields containing delimiters default `"`.
-            escape (Optional[str], optional): Single-character escape for special characters default `\\`.
-            header (Optional[bool], optional): Whether to write a header row with column names, default True.
-            date_format (Optional[str], optional): Format string for date columns. Uses chrono strftime format (e.g., "%Y-%m-%d", "%d/%m/%Y"). Defaults to None (ISO 8601 format).
-            timestamp_format (Optional[str], optional): Format string for timestamp columns. Uses chrono strftime format (e.g., "%Y-%m-%d %H:%M:%S", "%+"). Defaults to None (ISO 8601 format).
-
-        Returns:
-            DataFrame: The filenames that were written out as strings.
-
-        Note:
-            This call is **blocking** and will execute the DataFrame when called
-
-            **Timezone handling**: For timezone-aware timestamp columns, the timestamps are converted
-            to the target timezone before formatting. For example, a timestamp stored as UTC but with
-            timezone "America/New_York" will be formatted in Eastern Time, not UTC. If the timezone
-            string is invalid, an error will be raised.
-
-        Examples:
-            Basic usage:
-
-            >>> import daft
-            >>> df = daft.from_pydict({"x": [1, 2, 3], "y": ["a", "b", "c"]})
-            >>> df.write_csv("output_dir", write_mode="overwrite")  # doctest: +SKIP
-
-            Custom date format (e.g., DD/MM/YYYY):
-
-            >>> import datetime
-            >>> df = daft.from_pydict({"date": [datetime.date(2024, 1, 15)]})
-            >>> df.write_csv("output_dir", date_format="%d/%m/%Y")  # doctest: +SKIP
-            # Output: 15/01/2024
-
-            Custom timestamp format:
-
-            >>> df = daft.from_pydict({"ts": [datetime.datetime(2024, 1, 15, 10, 30, 45)]})
-            >>> df.write_csv("output_dir", timestamp_format="%Y-%m-%d %H:%M:%S")  # doctest: +SKIP
-            # Output: 2024-01-15 10:30:45
-
-            ISO 8601 / RFC 3339 timestamp format:
-
-            >>> df.write_csv("output_dir", timestamp_format="%+")  # doctest: +SKIP
-            # Output: 2024-01-15T10:30:45+00:00
-
-        Tip:
-            See also [`df.write_parquet()`][daft.DataFrame.write_parquet] and [`df.write_json()`][daft.DataFrame.write_json]
-            other formats for writing DataFrames
-
-        """
-        if write_mode not in ["append", "overwrite", "overwrite-partitions"]:
-            raise ValueError(
-                f"Only support `append`, `overwrite`, or `overwrite-partitions` mode. {write_mode} is unsupported"
-            )
-        if write_mode == "overwrite-partitions" and partition_cols is None:
-            raise ValueError("Partition columns must be specified to use `overwrite-partitions` mode.")
-
-        io_config = get_context().daft_planning_config.default_io_config if io_config is None else io_config
-
-        cols: list[Expression] | None = None
-        if partition_cols is not None:
-            cols = column_inputs_to_expressions(tuple(partition_cols))
-
-        file_format_option = PyFormatSinkOption.csv(
-            delimiter=delimiter,
-            quote=quote,
-            escape=escape,
-            header=header,
-            date_format=date_format,
-            timestamp_format=timestamp_format,
-        )
-        builder = self._builder.write_tabular(
-            root_dir=root_dir,
-            partition_cols=cols,
-            write_mode=WriteMode.from_str(write_mode),
-            file_format=FileFormat.Csv,
-            file_format_option=file_format_option,
-            io_config=io_config,
-        )
-
-        # Block and write, then retrieve data
-        write_df = DataFrame(builder)
-        write_df.collect()
-        assert write_df._result is not None
-
-        # Populate and return a new disconnected DataFrame
-        # Keep the original logical plan so explain() can still show upstream operators
-        # (e.g. filters/projections before the write), instead of collapsing to an
-        # in-memory source after collect() caches the result.
-        result_df = DataFrame(write_df._get_current_builder())
-        result_df._result_cache = write_df._result_cache
-        result_df._preview = write_df._preview
-        result_df._metadata = write_df._metadata
-        return result_df
-
-    @DataframePublicAPI
-    def write_json(
-        self,
-        root_dir: str | pathlib.Path,
-        write_mode: Literal["append", "overwrite", "overwrite-partitions"] = "append",
-        partition_cols: list[ColumnInputType] | None = None,
-        io_config: IOConfig | None = None,
-        ignore_null_fields: bool | None = False,
-        date_format: str | None = None,
-        timestamp_format: str | None = None,
-    ) -> "DataFrame":
-        """Writes the DataFrame as JSON files, returning a new DataFrame with paths to the files that were written.
-
-        Files will be written to `<root_dir>/*` with randomly generated UUIDs as the file names.
-
-        Args:
-            root_dir (str): root file path to write JSON files to.
-            write_mode (str, optional): Operation mode of the write. `append` will add new data, `overwrite` will replace the contents of the root directory with new data. `overwrite-partitions` will replace only the contents in the partitions that are being written to. Defaults to "append".
-            partition_cols (Optional[List[ColumnInputType]], optional): How to subpartition each partition further. Defaults to None.
-            io_config (Optional[IOConfig], optional): configurations to use when interacting with remote storage.
-            ignore_null_fields (Optional[bool], optional): Whether to ignore fields with null values when writing JSON. Defaults to False.
-            date_format (Optional[str], optional): Format string for date columns. Uses chrono strftime format (e.g., "%Y-%m-%d", "%d/%m/%Y"). Defaults to None (ISO 8601 format).
-            timestamp_format (Optional[str], optional): Format string for timestamp columns. Uses chrono strftime format (e.g., "%Y-%m-%d %H:%M:%S", "%+"). Defaults to None (ISO 8601 format).
-
-        Returns:
-            DataFrame: The filenames that were written out as strings.
-
-        Note:
-            This call is **blocking** and will execute the DataFrame when called
-
-        **Timezone handling**: For timezone-aware timestamp columns, the timestamps are converted
-        to the target timezone before formatting. For example, a timestamp stored as UTC but with
-        timezone "America/New_York" will be formatted in Eastern Time, not UTC. If the timezone
-        string is invalid, an error will be raised.
-
-        Examples:
-            Basic usage:
-
-            >>> import daft
-            >>> df = daft.from_pydict({"x": [1, 2, 3], "y": ["a", "b", "c"]})
-            >>> df.write_json("output_dir", write_mode="overwrite")  # doctest: +SKIP
-
-            Custom date format (e.g., DD/MM/YYYY):
-
-            >>> import datetime
-            >>> df = daft.from_pydict({"date": [datetime.date(2024, 1, 15)]})
-            >>> df.write_json("output_dir", date_format="%d/%m/%Y")  # doctest: +SKIP
-            # Output: "15/01/2024"
-
-            Custom timestamp format:
-
-            >>> df = daft.from_pydict({"ts": [datetime.datetime(2024, 1, 15, 10, 30, 45)]})
-            >>> df.write_json("output_dir", timestamp_format="%Y-%m-%d %H:%M:%S")  # doctest: +SKIP
-            # Output: "2024-01-15 10:30:45"
-
-            ISO 8601 / RFC 3339 timestamp format:
-
-            >>> df.write_json("output_dir", timestamp_format="%+")  # doctest: +SKIP
-            # Output: "2024-01-15T10:30:45+00:00"
-        """
-        if write_mode not in ["append", "overwrite", "overwrite-partitions"]:
-            raise ValueError(
-                f"Only support `append`, `overwrite`, or `overwrite-partitions` mode. {write_mode} is unsupported"
-            )
-        if write_mode == "overwrite-partitions" and partition_cols is None:
-            raise ValueError("Partition columns must be specified to use `overwrite-partitions` mode.")
-
-        io_config = get_context().daft_planning_config.default_io_config if io_config is None else io_config
-
-        cols: list[Expression] | None = None
-        if partition_cols is not None:
-            cols = column_inputs_to_expressions(tuple(partition_cols))
-
-        file_format_option = PyFormatSinkOption.json(
-            ignore_null_fields=ignore_null_fields,
-            date_format=date_format,
-            timestamp_format=timestamp_format,
-        )
-        builder = self._builder.write_tabular(
-            root_dir=root_dir,
-            partition_cols=cols,
-            write_mode=WriteMode.from_str(write_mode),
-            file_format=FileFormat.Json,
-            file_format_option=file_format_option,
             io_config=io_config,
         )
         # Block and write, then retrieve data
@@ -2756,14 +2538,10 @@ class DataFrame:
             fmt = file_format.strip().lower()
             if fmt == "parquet":
                 file_format = FileFormat.Parquet
-            elif fmt == "csv":
-                file_format = FileFormat.Csv
-            elif fmt in ("json", "jsonl", "ndjson"):
-                file_format = FileFormat.Json
             else:
                 raise ValueError(f"[skip_existing] Unsupported format: {file_format}")
 
-        if file_format not in (FileFormat.Parquet, FileFormat.Csv, FileFormat.Json):
+        if file_format != FileFormat.Parquet:
             raise ValueError(f"[skip_existing] Unsupported format: {file_format}")
 
         io_config = get_context().daft_planning_config.default_io_config if io_config is None else io_config
@@ -2817,14 +2595,8 @@ class DataFrame:
             from daft.io._parquet import read_parquet
 
             read_fn = read_parquet
-        elif file_format == FileFormat.Csv:
-            from daft.io._csv import read_csv
-
-            read_fn = read_csv
         else:
-            from daft.io._json import read_json
-
-            read_fn = read_json
+            raise ValueError(f"[skip_existing] Unsupported format: {file_format}")
 
         key_exprs = column_inputs_to_expressions(tuple(key_column))
         key_filtering_config = KeyFilteringConfig(

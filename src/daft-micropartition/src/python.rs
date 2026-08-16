@@ -7,14 +7,12 @@ use daft_core::{
     prelude::*,
     python::{PySchema, PySeries, PyTimeUnit},
 };
-use daft_csv::{CsvConvertOptions, CsvParseOptions, CsvReadOptions};
 use daft_dsl::{
     Expr,
     expr::bound_expr::{BoundAggExpr, BoundExpr},
     python::PyExpr,
 };
 use daft_io::{IOStatsContext, python::IOConfig};
-use daft_json::{JsonConvertOptions, JsonParseOptions, JsonReadOptions};
 use daft_parquet::read::ParquetSchemaInferenceOptions;
 use daft_recordbatch::{RecordBatch, python::PyRecordBatch};
 use daft_scan::{ScanSourceKind, ScanTaskRef, storage_config::StorageConfig};
@@ -600,107 +598,6 @@ impl PyMicroPartition {
         })
     }
 
-    #[staticmethod]
-    #[pyo3(signature = (
-        uri,
-        schema,
-        storage_config,
-        include_columns=None,
-        num_rows=None
-    ))]
-    pub fn read_json(
-        py: Python,
-        uri: &str,
-        schema: PySchema,
-        storage_config: StorageConfig,
-        include_columns: Option<Vec<String>>,
-        num_rows: Option<usize>,
-    ) -> PyResult<Self> {
-        let py_table = read_json_into_py_table(
-            py,
-            uri,
-            schema.clone(),
-            storage_config,
-            include_columns,
-            num_rows,
-        )?;
-        let mp = crate::micropartition::MicroPartition::new_loaded(
-            schema.into(),
-            Arc::new(vec![py_table.into()]),
-            None,
-        );
-        Ok(mp.into())
-    }
-
-    #[staticmethod]
-    #[pyo3(signature = (
-        uri,
-        convert_options=None,
-        parse_options=None,
-        read_options=None,
-        io_config=None,
-        multithreaded_io=None
-    ))]
-    pub fn read_json_native(
-        py: Python,
-        uri: &str,
-        convert_options: Option<JsonConvertOptions>,
-        parse_options: Option<JsonParseOptions>,
-        read_options: Option<JsonReadOptions>,
-        io_config: Option<IOConfig>,
-        multithreaded_io: Option<bool>,
-    ) -> PyResult<Self> {
-        let mp = py.detach(|| {
-            let io_stats = IOStatsContext::new(format!("read_json: for uri {uri}"));
-            let io_config = io_config.unwrap_or_default().config.into();
-
-            crate::micropartition::read_json_into_micropartition(
-                [uri].as_ref(),
-                convert_options,
-                parse_options,
-                read_options,
-                io_config,
-                multithreaded_io.unwrap_or(true),
-                Some(io_stats),
-            )
-        })?;
-        Ok(mp.into())
-    }
-
-    #[staticmethod]
-    #[pyo3(signature = (
-        uri,
-        convert_options=None,
-        parse_options=None,
-        read_options=None,
-        io_config=None,
-        multithreaded_io=None
-    ))]
-    pub fn read_csv(
-        py: Python,
-        uri: &str,
-        convert_options: Option<CsvConvertOptions>,
-        parse_options: Option<CsvParseOptions>,
-        read_options: Option<CsvReadOptions>,
-        io_config: Option<IOConfig>,
-        multithreaded_io: Option<bool>,
-    ) -> PyResult<Self> {
-        let mp = py.detach(|| {
-            let io_stats = IOStatsContext::new(format!("read_csv: for uri {uri}"));
-            let io_config = io_config.unwrap_or_default().config.into();
-            crate::micropartition::read_csv_into_micropartition(
-                [uri].as_ref(),
-                convert_options,
-                parse_options,
-                read_options,
-                io_config,
-                multithreaded_io.unwrap_or(true),
-                Some(io_stats),
-            )
-        })?;
-        Ok(mp.into())
-    }
-
     #[allow(clippy::too_many_arguments)]
     #[staticmethod]
     #[pyo3(signature = (
@@ -952,69 +849,6 @@ impl PyMicroPartition {
         let mp = py.detach(|| MicroPartition::read_from_ipc_stream(buffer))?;
         Ok(mp.into())
     }
-}
-
-pub fn read_json_into_py_table(
-    py: Python,
-    uri: &str,
-    schema: PySchema,
-    storage_config: StorageConfig,
-    include_columns: Option<Vec<String>>,
-    num_rows: Option<usize>,
-) -> PyResult<PyRecordBatch> {
-    let read_options = py
-        .import(pyo3::intern!(py, "daft.runners.partitioning"))?
-        .getattr(pyo3::intern!(py, "TableReadOptions"))?
-        .call1((num_rows, include_columns))?;
-    let py_schema = py
-        .import(pyo3::intern!(py, "daft.logical.schema"))?
-        .getattr(pyo3::intern!(py, "Schema"))?
-        .getattr(pyo3::intern!(py, "_from_pyschema"))?
-        .call1((schema,))?;
-    Ok(py
-        .import(pyo3::intern!(py, "daft.recordbatch.recordbatch_io"))?
-        .getattr(pyo3::intern!(py, "read_json"))?
-        .call1((uri, py_schema, storage_config, read_options))?
-        .getattr(pyo3::intern!(py, "to_record_batch"))?
-        .call0()?
-        .getattr(pyo3::intern!(py, "_recordbatch"))?
-        .extract()?)
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn read_csv_into_py_table(
-    py: Python,
-    uri: &str,
-    has_header: bool,
-    delimiter: Option<char>,
-    double_quote: bool,
-    schema: PySchema,
-    storage_config: StorageConfig,
-    include_columns: Option<Vec<String>>,
-    num_rows: Option<usize>,
-) -> PyResult<PyRecordBatch> {
-    let py_schema = py
-        .import(pyo3::intern!(py, "daft.logical.schema"))?
-        .getattr(pyo3::intern!(py, "Schema"))?
-        .getattr(pyo3::intern!(py, "_from_pyschema"))?
-        .call1((schema,))?;
-    let read_options = py
-        .import(pyo3::intern!(py, "daft.runners.partitioning"))?
-        .getattr(pyo3::intern!(py, "TableReadOptions"))?
-        .call1((num_rows, include_columns))?;
-    let header_idx = if has_header { Some(0) } else { None };
-    let parse_options = py
-        .import(pyo3::intern!(py, "daft.runners.partitioning"))?
-        .getattr(pyo3::intern!(py, "TableParseCSVOptions"))?
-        .call1((delimiter, header_idx, double_quote))?;
-    Ok(py
-        .import(pyo3::intern!(py, "daft.recordbatch.recordbatch_io"))?
-        .getattr(pyo3::intern!(py, "read_csv"))?
-        .call1((uri, py_schema, storage_config, parse_options, read_options))?
-        .getattr(pyo3::intern!(py, "to_record_batch"))?
-        .call0()?
-        .getattr(pyo3::intern!(py, "_recordbatch"))?
-        .extract()?)
 }
 
 pub fn read_parquet_into_py_table(

@@ -232,11 +232,11 @@ class ResourceRequest:
     def __ne__(self, other: ResourceRequest) -> bool: ...  # type: ignore[override]
 
 class FileFormat(Enum):
-    """Format of a file, e.g. Parquet, CSV, and JSON."""
+    """Format of a file, e.g. Parquet, WARC, and Text."""
 
     Parquet = 1
-    Csv = 2
-    Json = 3
+    Warc = 2
+    Text = 3
 
     def ext(self) -> str: ...
 
@@ -264,46 +264,6 @@ class ParquetSourceConfig:
         field_id_mapping: dict[int, PyField] | None = None,
         row_groups: list[list[int]] | None = None,
         chunk_size: int | None = None,
-    ): ...
-
-class CsvSourceConfig:
-    """Configuration of a CSV data source."""
-
-    delimiter: str | None
-    has_headers: bool
-    double_quote: bool
-    quote: str | None
-    escape_char: str | None
-    comment: str | None
-    allow_variable_columns: bool
-    buffer_size: int | None
-    chunk_size: int | None
-
-    def __init__(
-        self,
-        has_headers: bool,
-        double_quote: bool,
-        allow_variable_columns: bool,
-        delimiter: str | None,
-        quote: str | None,
-        escape_char: str | None,
-        comment: str | None,
-        buffer_size: int | None = None,
-        chunk_size: int | None = None,
-    ): ...
-
-class JsonSourceConfig:
-    """Configuration of a JSON data source."""
-
-    buffer_size: int | None
-    chunk_size: int | None
-    skip_empty_files: bool
-
-    def __init__(
-        self,
-        buffer_size: int | None = None,
-        chunk_size: int | None = None,
-        skip_empty_files: bool = False,
     ): ...
 
 class WarcSourceConfig:
@@ -338,23 +298,13 @@ class TextSourceConfig:
     ): ...
 
 class FileFormatConfig:
-    """Configuration for parsing a particular file format (Parquet, CSV, JSON)."""
+    """Configuration for parsing a particular file format (Parquet, WARC, Text)."""
 
-    config: ParquetSourceConfig | CsvSourceConfig | JsonSourceConfig | WarcSourceConfig
+    config: ParquetSourceConfig | WarcSourceConfig | TextSourceConfig
 
     @staticmethod
     def from_parquet_config(config: ParquetSourceConfig) -> FileFormatConfig:
         """Create a Parquet file format config."""
-        ...
-
-    @staticmethod
-    def from_csv_config(config: CsvSourceConfig) -> FileFormatConfig:
-        """Create a CSV file format config."""
-        ...
-
-    @staticmethod
-    def from_json_config(config: JsonSourceConfig) -> FileFormatConfig:
-        """Create a JSON file format config."""
         ...
 
     @staticmethod
@@ -373,87 +323,6 @@ class FileFormatConfig:
 
     def __eq__(self, other: FileFormatConfig) -> bool: ...  # type: ignore[override]
     def __ne__(self, other: FileFormatConfig) -> bool: ...  # type: ignore[override]
-
-class CsvConvertOptions:
-    """Options for converting CSV data to Daft data."""
-
-    limit: int | None
-    include_columns: list[str] | None
-    column_names: list[str] | None
-    schema: PySchema | None
-    predicate: PyExpr | None
-
-    def __init__(
-        self,
-        limit: int | None = None,
-        include_columns: list[str] | None = None,
-        column_names: list[str] | None = None,
-        schema: PySchema | None = None,
-        predicate: PyExpr | None = None,
-    ): ...
-
-class CsvParseOptions:
-    """Options for parsing CSV files."""
-
-    has_header: bool
-    delimiter: str | None
-    double_quote: bool
-    quote: str | None
-    allow_variable_columns: bool
-    escape_char: str | None
-    comment: str | None
-
-    def __init__(
-        self,
-        has_header: bool = True,
-        delimiter: str | None = None,
-        double_quote: bool = True,
-        quote: str | None = None,
-        allow_variable_columns: bool = False,
-        escape_char: str | None = None,
-        comment: str | None = None,
-    ): ...
-
-class CsvReadOptions:
-    """Options for reading CSV files."""
-
-    buffer_size: int | None
-    chunk_size: int | None
-
-    def __init__(
-        self,
-        buffer_size: int | None = None,
-        chunk_size: int | None = None,
-    ): ...
-
-class JsonConvertOptions:
-    """Options for converting JSON data to Daft data."""
-
-    limit: int | None
-    include_columns: list[str] | None
-    schema: PySchema | None
-
-    def __init__(
-        self,
-        limit: int | None = None,
-        include_columns: list[str] | None = None,
-        schema: PySchema | None = None,
-    ): ...
-
-class JsonParseOptions:
-    """Options for parsing JSON files."""
-
-class JsonReadOptions:
-    """Options for reading JSON files."""
-
-    buffer_size: int | None
-    chunk_size: int | None
-
-    def __init__(
-        self,
-        buffer_size: int | None = None,
-        chunk_size: int | None = None,
-    ): ...
 
 class FileInfo:
     """Metadata for a single file."""
@@ -1283,36 +1152,6 @@ def read_parquet_schema(
     multithreaded_io: bool | None = None,
     coerce_int96_timestamp_unit: PyTimeUnit | None = None,
 ) -> PySchema: ...
-def read_csv(
-    uri: str,
-    convert_options: CsvConvertOptions | None = None,
-    parse_options: CsvParseOptions | None = None,
-    read_options: CsvReadOptions | None = None,
-    io_config: IOConfig | None = None,
-    multithreaded_io: bool | None = None,
-) -> PyRecordBatch: ...
-def read_csv_schema(
-    uri: str,
-    parse_options: CsvParseOptions | None = None,
-    io_config: IOConfig | None = None,
-    multithreaded_io: bool | None = None,
-) -> PySchema: ...
-def read_json(
-    uri: str,
-    convert_options: JsonConvertOptions | None = None,
-    parse_options: JsonParseOptions | None = None,
-    read_options: JsonReadOptions | None = None,
-    io_config: IOConfig | None = None,
-    multithreaded_io: bool | None = None,
-    max_chunks_in_flight: int | None = None,
-) -> PyRecordBatch: ...
-def read_json_schema(
-    uri: str,
-    parse_options: JsonParseOptions | None = None,
-    io_config: IOConfig | None = None,
-    multithreaded_io: bool | None = None,
-) -> PySchema: ...
-
 class PyTimeUnit:
     @staticmethod
     def nanoseconds() -> PyTimeUnit: ...
@@ -1976,26 +1815,6 @@ class PyMicroPartition:
         coerce_int96_timestamp_unit: PyTimeUnit = PyTimeUnit.nanoseconds(),
     ) -> PyMicroPartition: ...
     @classmethod
-    def read_csv(
-        cls,
-        uri: str,
-        convert_options: CsvConvertOptions | None = None,
-        parse_options: CsvParseOptions | None = None,
-        read_options: CsvReadOptions | None = None,
-        io_config: IOConfig | None = None,
-        multithreaded_io: bool | None = None,
-    ) -> PyMicroPartition: ...
-    @classmethod
-    def read_json_native(
-        cls,
-        uri: str,
-        convert_options: JsonConvertOptions | None = None,
-        parse_options: JsonParseOptions | None = None,
-        read_options: JsonReadOptions | None = None,
-        io_config: IOConfig | None = None,
-        multithreaded_io: bool | None = None,
-    ) -> PyMicroPartition: ...
-    @classmethod
     def read_warc(
         cls,
         uri: str,
@@ -2018,23 +1837,6 @@ class PyMicroPartitionSet:
     def items(self) -> list[tuple[int, PyMicroPartition]]: ...
 
 class PyFormatSinkOption:
-    @classmethod
-    def csv(
-        cls,
-        delimiter: str | None = None,
-        quote: str | None = None,
-        escape: str | None = None,
-        header: bool | None = None,
-        date_format: str | None = None,
-        timestamp_format: str | None = None,
-    ) -> PyFormatSinkOption: ...
-    @classmethod
-    def json(
-        cls,
-        ignore_null_fields: bool | None = None,
-        date_format: str | None = None,
-        timestamp_format: str | None = None,
-    ) -> PyFormatSinkOption: ...
     @classmethod
     def parquet(cls) -> PyFormatSinkOption: ...
 
@@ -2308,10 +2110,6 @@ class PyDaftExecutionConfig:
         parquet_target_filesize: int | None = None,
         parquet_target_row_group_size: int | None = None,
         parquet_inflation_factor: float | None = None,
-        csv_target_filesize: int | None = None,
-        csv_inflation_factor: float | None = None,
-        json_target_filesize: int | None = None,
-        json_inflation_factor: float | None = None,
         text_inflation_factor: float | None = None,
         shuffle_aggregation_default_partitions: int | None = None,
         partial_aggregation_threshold: int | None = None,
@@ -2356,14 +2154,6 @@ class PyDaftExecutionConfig:
     def parquet_target_row_group_size(self) -> int: ...
     @property
     def parquet_inflation_factor(self) -> float: ...
-    @property
-    def csv_target_filesize(self) -> int: ...
-    @property
-    def csv_inflation_factor(self) -> float: ...
-    @property
-    def json_target_filesize(self) -> int: ...
-    @property
-    def json_inflation_factor(self) -> float: ...
     @property
     def text_inflation_factor(self) -> float: ...
     @property

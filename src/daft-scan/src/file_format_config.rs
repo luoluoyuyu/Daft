@@ -16,8 +16,6 @@ use {
 #[cfg_attr(debug_assertions, derive(Debug))]
 pub enum FileFormatConfig {
     Parquet(ParquetSourceConfig),
-    Csv(CsvSourceConfig),
-    Json(JsonSourceConfig),
     Warc(WarcSourceConfig),
     Text(TextSourceConfig),
 }
@@ -38,8 +36,6 @@ impl FileFormatConfig {
     pub fn var_name(&self) -> String {
         match self {
             Self::Parquet(_) => "Parquet".to_string(),
-            Self::Csv(_) => "Csv".to_string(),
-            Self::Json(_) => "Json".to_string(),
             Self::Warc(_) => "Warc".to_string(),
             Self::Text(_) => "Text".to_string(),
         }
@@ -49,8 +45,6 @@ impl FileFormatConfig {
     pub fn multiline_display(&self) -> Vec<String> {
         match self {
             Self::Parquet(source) => source.multiline_display(),
-            Self::Csv(source) => source.multiline_display(),
-            Self::Json(source) => source.multiline_display(),
             Self::Warc(source) => source.multiline_display(),
             Self::Text(source) => source.multiline_display(),
         }
@@ -61,8 +55,6 @@ impl From<&FileFormatConfig> for FileFormat {
     fn from(file_format_config: &FileFormatConfig) -> Self {
         match file_format_config {
             FileFormatConfig::Parquet(_) => Self::Parquet,
-            FileFormatConfig::Csv(_) => Self::Csv,
-            FileFormatConfig::Json(_) => Self::Json,
             FileFormatConfig::Warc(_) => Self::Warc,
             FileFormatConfig::Text(_) => Self::Text,
         }
@@ -171,172 +163,6 @@ impl ParquetSourceConfig {
 }
 
 impl_bincode_py_state_serialization!(ParquetSourceConfig);
-
-/// Configuration for a CSV data source.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, Hash)]
-#[cfg_attr(debug_assertions, derive(Debug))]
-#[cfg_attr(
-    feature = "python",
-    pyclass(module = "daft.daft", get_all, from_py_object)
-)]
-pub struct CsvSourceConfig {
-    pub delimiter: Option<char>,
-    pub has_headers: bool,
-    pub double_quote: bool,
-    pub quote: Option<char>,
-    pub escape_char: Option<char>,
-    pub comment: Option<char>,
-    pub allow_variable_columns: bool,
-    pub buffer_size: Option<usize>,
-    pub chunk_size: Option<usize>,
-}
-
-impl CsvSourceConfig {
-    #[must_use]
-    pub fn multiline_display(&self) -> Vec<String> {
-        let mut res = vec![];
-        if let Some(delimiter) = self.delimiter {
-            res.push(format!("Delimiter = {delimiter}"));
-        }
-        res.push(format!("Has headers = {}", self.has_headers));
-        res.push(format!("Double quote = {}", self.double_quote));
-        if let Some(quote) = self.quote {
-            res.push(format!("Quote = {quote}"));
-        }
-        if let Some(escape_char) = self.escape_char {
-            res.push(format!("Escape char = {escape_char}"));
-        }
-        if let Some(comment) = self.comment {
-            res.push(format!("Comment = {comment}"));
-        }
-        res.push(format!(
-            "Allow_variable_columns = {}",
-            self.allow_variable_columns
-        ));
-        if let Some(buffer_size) = self.buffer_size {
-            res.push(format!("Buffer size = {buffer_size}"));
-        }
-        if let Some(chunk_size) = self.chunk_size {
-            res.push(format!("Chunk size = {chunk_size}"));
-        }
-        res
-    }
-}
-
-#[cfg(feature = "python")]
-#[pymethods]
-impl CsvSourceConfig {
-    /// Create a config for a CSV data source.
-    ///
-    /// # Arguments
-    ///
-    /// * `delimiter` - The character delmiting individual cells in the CSV data.
-    /// * `has_headers` - Whether the CSV has a header row; if so, it will be skipped during data parsing.
-    /// * `buffer_size` - Size of the buffer (in bytes) used by the streaming reader.
-    /// * `chunk_size` - Size of the chunks (in rows) deserialized in parallel by the streaming reader.
-    #[allow(clippy::too_many_arguments)]
-    #[new]
-    #[pyo3(signature = (
-        has_headers,
-        double_quote,
-        allow_variable_columns,
-        delimiter=None,
-        quote=None,
-        escape_char=None,
-        comment=None,
-        buffer_size=None,
-        chunk_size=None
-    ))]
-    fn new(
-        has_headers: bool,
-        double_quote: bool,
-        allow_variable_columns: bool,
-        delimiter: Option<char>,
-        quote: Option<char>,
-        escape_char: Option<char>,
-        comment: Option<char>,
-        buffer_size: Option<usize>,
-        chunk_size: Option<usize>,
-    ) -> PyResult<Self> {
-        Ok(Self {
-            delimiter,
-            has_headers,
-            double_quote,
-            quote,
-            escape_char,
-            comment,
-            allow_variable_columns,
-            buffer_size,
-            chunk_size,
-        })
-    }
-}
-
-impl_bincode_py_state_serialization!(CsvSourceConfig);
-
-/// Configuration for a JSON data source.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, Hash)]
-#[cfg_attr(debug_assertions, derive(Debug))]
-#[cfg_attr(
-    feature = "python",
-    pyclass(module = "daft.daft", get_all, from_py_object)
-)]
-pub struct JsonSourceConfig {
-    pub buffer_size: Option<usize>,
-    pub chunk_size: Option<usize>,
-    pub skip_empty_files: bool,
-}
-
-impl JsonSourceConfig {
-    #[must_use]
-    pub fn new_internal(
-        buffer_size: Option<usize>,
-        chunk_size: Option<usize>,
-        skip_empty_files: bool,
-    ) -> Self {
-        Self {
-            buffer_size,
-            chunk_size,
-            skip_empty_files,
-        }
-    }
-
-    #[must_use]
-    pub fn multiline_display(&self) -> Vec<String> {
-        let mut res = vec![];
-        if let Some(buffer_size) = self.buffer_size {
-            res.push(format!("Buffer size = {buffer_size}"));
-        }
-        if let Some(chunk_size) = self.chunk_size {
-            res.push(format!("Chunk size = {chunk_size}"));
-        }
-        res
-    }
-}
-
-impl Default for JsonSourceConfig {
-    fn default() -> Self {
-        Self::new_internal(None, None, false)
-    }
-}
-
-#[cfg(feature = "python")]
-#[pymethods]
-impl JsonSourceConfig {
-    /// Create a config for a JSON data source.
-    ///
-    /// # Arguments
-    ///
-    /// * `buffer_size` - Size of the buffer (in bytes) used by the streaming reader.
-    /// * `chunk_size` - Size of the chunks (in bytes) deserialized in parallel by the streaming reader.
-    #[new]
-    #[pyo3(signature = (buffer_size=None, chunk_size=None, skip_empty_files=false))]
-    fn new(buffer_size: Option<usize>, chunk_size: Option<usize>, skip_empty_files: bool) -> Self {
-        Self::new_internal(buffer_size, chunk_size, skip_empty_files)
-    }
-}
-
-impl_bincode_py_state_serialization!(JsonSourceConfig);
 
 /// Configuration for a Database data source.
 #[derive(Clone, Serialize, Deserialize)]

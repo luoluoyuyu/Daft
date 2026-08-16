@@ -4,15 +4,9 @@ import logging
 from typing import TYPE_CHECKING, Any, Literal
 
 from daft.daft import (
-    CsvConvertOptions,
-    CsvParseOptions,
-    CsvReadOptions,
     IOConfig,
     JoinSide,
     JoinType,
-    JsonConvertOptions,
-    JsonParseOptions,
-    JsonReadOptions,
 )
 from daft.daft import PyMicroPartition as _PyMicroPartition
 from daft.daft import PyRecordBatch as _PyRecordBatch
@@ -486,48 +480,6 @@ class MicroPartition:
                 io_config,
                 multithreaded_io,
                 coerce_int96_timestamp_unit._timeunit,
-            )
-        )
-
-    @classmethod
-    def read_csv(
-        cls,
-        path: str,
-        convert_options: CsvConvertOptions,
-        parse_options: CsvParseOptions,
-        read_options: CsvReadOptions,
-        io_config: IOConfig | None = None,
-        multithreaded_io: bool | None = None,
-    ) -> MicroPartition:
-        return MicroPartition._from_pymicropartition(
-            _PyMicroPartition.read_csv(
-                uri=path,
-                convert_options=convert_options,
-                parse_options=parse_options,
-                read_options=read_options,
-                io_config=io_config,
-                multithreaded_io=multithreaded_io,
-            )
-        )
-
-    @classmethod
-    def read_json(
-        cls,
-        path: str,
-        convert_options: JsonConvertOptions | None = None,
-        parse_options: JsonParseOptions | None = None,
-        read_options: JsonReadOptions | None = None,
-        io_config: IOConfig | None = None,
-        multithreaded_io: bool | None = None,
-    ) -> MicroPartition:
-        return MicroPartition._from_pymicropartition(
-            _PyMicroPartition.read_json_native(
-                uri=path,
-                convert_options=convert_options,
-                parse_options=parse_options,
-                read_options=read_options,
-                io_config=io_config,
-                multithreaded_io=multithreaded_io,
             )
         )
 
