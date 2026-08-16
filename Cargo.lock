@@ -1706,7 +1706,7 @@ dependencies = [
 
 [[package]]
 name = "common-arrow-ffi"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "arrow",
  "arrow-schema 57.3.0",
@@ -1715,7 +1715,7 @@ dependencies = [
 
 [[package]]
 name = "common-daft-config"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "common-io-config",
  "common-py-serde",
@@ -1725,7 +1725,7 @@ dependencies = [
 
 [[package]]
 name = "common-display"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "comfy-table",
  "indexmap",
@@ -1737,7 +1737,7 @@ dependencies = [
 
 [[package]]
 name = "common-error"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "arrow-schema 57.3.0",
  "pyo3",
@@ -1749,7 +1749,7 @@ dependencies = [
 
 [[package]]
 name = "common-file-formats"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "common-error",
  "common-py-serde",
@@ -1759,14 +1759,14 @@ dependencies = [
 
 [[package]]
 name = "common-hashable-float-wrapper"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "common-image"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "bincode",
  "common-error",
@@ -1780,7 +1780,7 @@ dependencies = [
 
 [[package]]
 name = "common-io-config"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "aws-credential-types",
  "chrono",
@@ -1797,7 +1797,7 @@ dependencies = [
 
 [[package]]
 name = "common-logging"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "arc-swap",
  "log",
@@ -1805,7 +1805,7 @@ dependencies = [
 
 [[package]]
 name = "common-macros"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "proc-macro-crate",
  "proc-macro-error",
@@ -1816,7 +1816,7 @@ dependencies = [
 
 [[package]]
 name = "common-metrics"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "atomic_float",
  "bincode",
@@ -1832,7 +1832,7 @@ dependencies = [
 
 [[package]]
 name = "common-ndarray"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "common-py-serde",
  "ndarray",
@@ -1842,7 +1842,7 @@ dependencies = [
 
 [[package]]
 name = "common-partitioning"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "common-error",
  "common-py-serde",
@@ -1853,7 +1853,7 @@ dependencies = [
 
 [[package]]
 name = "common-pattern"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "regex",
  "regex-syntax",
@@ -1861,7 +1861,7 @@ dependencies = [
 
 [[package]]
 name = "common-py-serde"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "bincode",
  "pyo3",
@@ -1870,7 +1870,7 @@ dependencies = [
 
 [[package]]
 name = "common-resource-request"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "common-error",
  "common-hashable-float-wrapper",
@@ -1881,7 +1881,7 @@ dependencies = [
 
 [[package]]
 name = "common-runtime"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "common-error",
  "futures",
@@ -1895,7 +1895,7 @@ dependencies = [
 
 [[package]]
 name = "common-system-info"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "pyo3",
  "sysinfo",
@@ -1903,7 +1903,7 @@ dependencies = [
 
 [[package]]
 name = "common-tracing"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "common-runtime",
  "log",
@@ -1917,14 +1917,14 @@ dependencies = [
 
 [[package]]
 name = "common-treenode"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "common-error",
 ]
 
 [[package]]
 name = "common-version"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 
 [[package]]
 name = "concurrent-queue"
@@ -2230,7 +2230,7 @@ dependencies = [
 
 [[package]]
 name = "daft"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "aws-lc-rs",
  "aws-lc-sys",
@@ -2300,14 +2300,14 @@ dependencies = [
 
 [[package]]
 name = "daft-ai"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "pyo3",
 ]
 
 [[package]]
 name = "daft-algebra"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "common-error",
  "common-treenode",
@@ -2320,7 +2320,7 @@ dependencies = [
 
 [[package]]
 name = "daft-catalog"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "common-error",
  "common-pattern",
@@ -2339,7 +2339,7 @@ dependencies = [
 
 [[package]]
 name = "daft-checkpoint"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "async-trait",
  "common-error",
@@ -2353,7 +2353,7 @@ dependencies = [
 
 [[package]]
 name = "daft-cli"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "clap",
  "console",
@@ -2366,7 +2366,7 @@ dependencies = [
 
 [[package]]
 name = "daft-compression"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "async-compression",
  "tokio",
@@ -2375,7 +2375,7 @@ dependencies = [
 
 [[package]]
 name = "daft-context"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "common-daft-config",
  "common-error",
@@ -2398,7 +2398,7 @@ dependencies = [
 
 [[package]]
 name = "daft-core"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "arrow",
  "arrow-row",
@@ -2439,7 +2439,7 @@ dependencies = [
 
 [[package]]
 name = "daft-csv"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "arrow-schema 57.3.0",
  "async-compat",
@@ -2471,7 +2471,7 @@ dependencies = [
 
 [[package]]
 name = "daft-dashboard"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "async-stream",
  "axum",
@@ -2495,7 +2495,7 @@ dependencies = [
 
 [[package]]
 name = "daft-decoding"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "arrow-array",
  "arrow-schema 57.3.0",
@@ -2510,7 +2510,7 @@ dependencies = [
 
 [[package]]
 name = "daft-distributed"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "common-daft-config",
  "common-display",
@@ -2550,7 +2550,7 @@ dependencies = [
 
 [[package]]
 name = "daft-dsl"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "async-trait",
  "common-error",
@@ -2593,7 +2593,7 @@ dependencies = [
 
 [[package]]
 name = "daft-ext-internal"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -2619,7 +2619,7 @@ dependencies = [
 
 [[package]]
 name = "daft-file"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "common-error",
  "common-runtime",
@@ -2636,7 +2636,7 @@ dependencies = [
 
 [[package]]
 name = "daft-functions"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "arrow-array",
  "common-error",
@@ -2654,7 +2654,7 @@ dependencies = [
 
 [[package]]
 name = "daft-functions-binary"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "arrow",
  "base64 0.22.1",
@@ -2686,7 +2686,7 @@ dependencies = [
 
 [[package]]
 name = "daft-functions-list"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "arrow",
  "common-error",
@@ -2713,7 +2713,7 @@ dependencies = [
 
 [[package]]
 name = "daft-functions-temporal"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "arrow-array",
  "chrono",
@@ -2727,7 +2727,7 @@ dependencies = [
 
 [[package]]
 name = "daft-functions-tokenize"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "arrow",
  "base64 0.22.1",
@@ -2744,7 +2744,7 @@ dependencies = [
 
 [[package]]
 name = "daft-functions-uri"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "arrow",
  "async-trait",
@@ -2764,7 +2764,7 @@ dependencies = [
 
 [[package]]
 name = "daft-functions-utf8"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "aho-corasick",
  "arrow",
@@ -2784,7 +2784,7 @@ dependencies = [
 
 [[package]]
 name = "daft-groupby"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "arrow",
  "common-error",
@@ -2795,7 +2795,7 @@ dependencies = [
 
 [[package]]
 name = "daft-hash"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "common-error",
  "mur3",
@@ -2806,7 +2806,7 @@ dependencies = [
 
 [[package]]
 name = "daft-image"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "arrow",
  "base64 0.22.1",
@@ -2826,7 +2826,7 @@ dependencies = [
 
 [[package]]
 name = "daft-io"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "async-recursion",
  "async-stream",
@@ -2874,7 +2874,7 @@ dependencies = [
 
 [[package]]
 name = "daft-json"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "arrow",
  "chrono",
@@ -2907,7 +2907,7 @@ dependencies = [
 
 [[package]]
 name = "daft-local-execution"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "arc-swap",
  "arrow-buffer 57.3.0",
@@ -2970,7 +2970,7 @@ dependencies = [
 
 [[package]]
 name = "daft-local-plan"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "arrow-array",
  "arrow-schema 57.3.0",
@@ -2999,7 +2999,7 @@ dependencies = [
 
 [[package]]
 name = "daft-logical-plan"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "bincode",
  "common-daft-config",
@@ -3045,7 +3045,7 @@ dependencies = [
 
 [[package]]
 name = "daft-micropartition"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "arrow-array",
  "arrow-ipc",
@@ -3073,7 +3073,7 @@ dependencies = [
 
 [[package]]
 name = "daft-minhash"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "approx",
  "arrow",
@@ -3088,7 +3088,7 @@ dependencies = [
 
 [[package]]
 name = "daft-parquet"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "arrow",
  "bincode",
@@ -3117,7 +3117,7 @@ dependencies = [
 
 [[package]]
 name = "daft-protocol"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "prost 0.13.5",
  "prost-build",
@@ -3126,7 +3126,7 @@ dependencies = [
 
 [[package]]
 name = "daft-recordbatch"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -3159,7 +3159,7 @@ dependencies = [
 
 [[package]]
 name = "daft-runners"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "common-error",
  "daft-logical-plan",
@@ -3170,7 +3170,7 @@ dependencies = [
 
 [[package]]
 name = "daft-runtime"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "axum",
  "common-daft-config",
@@ -3189,7 +3189,7 @@ dependencies = [
 
 [[package]]
 name = "daft-scan"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "arrow-schema 57.3.0",
  "async-trait",
@@ -3229,7 +3229,7 @@ dependencies = [
 
 [[package]]
 name = "daft-schema"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "arrow",
  "arrow-schema 57.3.0",
@@ -3254,7 +3254,7 @@ dependencies = [
 
 [[package]]
 name = "daft-session"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "common-error",
  "daft-ai",
@@ -3270,7 +3270,7 @@ dependencies = [
 
 [[package]]
 name = "daft-shuffles"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "arrow-flight",
  "arrow-ipc",
@@ -3292,7 +3292,7 @@ dependencies = [
 
 [[package]]
 name = "daft-sketch"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "arrow-array",
  "arrow-schema 57.3.0",
@@ -3304,7 +3304,7 @@ dependencies = [
 
 [[package]]
 name = "daft-sql"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "common-daft-config",
  "common-error",
@@ -3332,7 +3332,7 @@ dependencies = [
 
 [[package]]
 name = "daft-stats"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "common-error",
  "daft-core",
@@ -3344,7 +3344,7 @@ dependencies = [
 
 [[package]]
 name = "daft-text"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "async-stream",
  "common-error",
@@ -3362,7 +3362,7 @@ dependencies = [
 
 [[package]]
 name = "daft-warc"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "arrow-array",
  "chrono",
@@ -3385,7 +3385,7 @@ dependencies = [
 
 [[package]]
 name = "daft-writers"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 dependencies = [
  "arrow-array",
  "arrow-csv",
@@ -4650,7 +4650,7 @@ dependencies = [
 
 [[package]]
 name = "hyperloglog"
-version = "0.3.0-dev0+unite"
+version = "0.3.0-dev0"
 
 [[package]]
 name = "iana-time-zone"
