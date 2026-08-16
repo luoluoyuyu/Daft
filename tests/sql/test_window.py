@@ -10,12 +10,7 @@ import daft
 from daft import Window, col
 from daft.expressions import interval
 from daft.functions import dense_rank, rank, row_number
-from tests.conftest import assert_df_equals, get_tests_daft_runner_name
-
-pytestmark = pytest.mark.skipif(
-    get_tests_daft_runner_name() == "ray",
-    reason="requires Native Runner to be in use",
-)
+from tests.conftest import assert_df_equals
 
 
 def test_row_number_window_function():

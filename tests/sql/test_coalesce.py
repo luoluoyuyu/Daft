@@ -5,7 +5,6 @@ import pytest
 import daft
 from daft import col, lit
 from daft.functions import coalesce
-from tests.conftest import get_tests_daft_runner_name
 
 
 def assert_eq(actual, expect):
@@ -123,10 +122,6 @@ def test_coalesce_with_nulls():
     assert_eq(actual, expect)
 
 
-@pytest.mark.skipif(
-    get_tests_daft_runner_name() == "ray",
-    reason="Short-circuit UDF tests rely on checking triggered counters in the main process, which doesn't work with Ray's distributed execution",
-)
 def test_fallback_early_exit():
     triggered = 0
 
@@ -142,10 +137,6 @@ def test_fallback_early_exit():
     assert triggered == 1, f"Expected fallback to process 1 row, got {triggered}"
 
 
-@pytest.mark.skipif(
-    get_tests_daft_runner_name() == "ray",
-    reason="Short-circuit UDF tests rely on checking triggered counters in the main process, which doesn't work with Ray's distributed execution",
-)
 def test_coalesce_short_circuit_udf():
     """Test that coalesce short-circuits and doesn't evaluate unnecessary arguments with @daft.udf."""
     triggered = 0
@@ -163,10 +154,6 @@ def test_coalesce_short_circuit_udf():
     assert triggered == 1, f"Expected fallback to be called once, got {triggered} times"
 
 
-@pytest.mark.skipif(
-    get_tests_daft_runner_name() == "ray",
-    reason="Short-circuit UDF tests rely on checking triggered counters in the main process, which doesn't work with Ray's distributed execution",
-)
 def test_coalesce_short_circuit_func():
     """Test that coalesce short-circuits and doesn't evaluate unnecessary arguments with @daft.func."""
     triggered = 0
@@ -183,10 +170,6 @@ def test_coalesce_short_circuit_func():
     assert triggered == 1, f"Expected fallback to be called once, got {triggered} times"
 
 
-@pytest.mark.skipif(
-    get_tests_daft_runner_name() == "ray",
-    reason="Short-circuit UDF tests rely on checking triggered counters in the main process, which doesn't work with Ray's distributed execution",
-)
 def test_coalesce_multi_arg_short_circuit():
     """Test that coalesce short-circuits with multiple arguments."""
     triggered = 0
@@ -221,10 +204,6 @@ def test_coalesce_multi_arg_short_circuit():
     assert triggered == 6, f"Expected fallbacks to be called 6 times, got {triggered} times"
 
 
-@pytest.mark.skipif(
-    get_tests_daft_runner_name() == "ray",
-    reason="Short-circuit UDF tests rely on checking triggered counters in the main process, which doesn't work with Ray's distributed execution",
-)
 def test_coalesce_complex_expressions():
     """Test coalesce with complex expressions that have side effects."""
     triggered = 0

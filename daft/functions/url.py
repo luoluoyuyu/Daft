@@ -6,27 +6,18 @@ from typing import TYPE_CHECKING, Literal
 
 from daft import context
 from daft.expressions import Expression
-from daft.runners import get_or_create_runner
 
 if TYPE_CHECKING:
     from daft.daft import IOConfig
 
 
 def _should_use_multithreading_tokio_runtime() -> bool:
-    """Whether or not our expression should use the multithreaded tokio runtime under the hood, or a singlethreaded one.
+    """Whether the expression should use the multithreaded tokio runtime under the hood.
 
-    This matters because for distributed workloads, each process has its own tokio I/O runtime. if each distributed process
-    is multithreaded (by default we spin up `N_CPU` threads) then we will be running `(N_CPU * N_PROC)` number of threads, and
-    opening `(N_CPU * N_PROC * max_connections)` number of connections. This is too large for big machines with many CPU cores.
-
-    Hence for Ray we default to doing the singlethreaded runtime. This means that we will have a limit of
-    `(singlethreaded=1 * N_PROC * max_connections)` number of open connections per machine, which works out to be reasonable at ~2-4k connections.
-
-    For local execution, we run in a single process which means that it all shares the same tokio I/O runtime and connection pool.
-    Thus we just have `(multithreaded=N_CPU * max_connections)` number of open connections, which is usually reasonable as well.
+    Local execution runs in a single process, so all expression evaluations share the same tokio
+    I/O runtime and connection pool, and the multithreaded runtime is appropriate.
     """
-    using_ray_runner = get_or_create_runner().name == "ray"
-    return not using_ray_runner
+    return True
 
 
 def _override_io_config_max_connections(max_connections: int, io_config: IOConfig | None) -> IOConfig:

@@ -8,7 +8,6 @@ import pytest
 import daft
 from daft import DataType, Series, col
 from daft.ai.utils import RetryAfterError
-from tests.conftest import get_tests_daft_runner_name
 
 
 def test_batch_udf():
@@ -272,10 +271,7 @@ def test_batch_retry_after_delay_respected(max_retries, is_async):
     elapsed = time.perf_counter() - start
 
     assert result == {"value": [2, 4, 6]}
-    # call_count tracking doesn't work with Ray due to process serialization
-    # but retry behavior is verified through timing and result correctness
-    if get_tests_daft_runner_name() != "ray":
-        assert state.call_count == max_retries + 1
+    assert state.call_count == max_retries + 1
     # Should honor the retry-after delay (accounting for ±25% jitter, so minimum is 75% of base delay)
     assert elapsed >= retry_delay * 0.7 * max_retries
 
@@ -319,11 +315,8 @@ def test_batch_retry_after_max_retries_exceeded(is_async):
     elapsed = time.perf_counter() - start
 
     assert original_error_message in str(exc_info.value)
-    # call_count tracking doesn't work with Ray due to process serialization
-    # but retry behavior is verified through exception and timing
-    if get_tests_daft_runner_name() != "ray":
-        # Should have attempted initial call + max_retries retries
-        assert state.call_count == 2
+    # Should have attempted initial call + max_retries retries
+    assert state.call_count == 2
     # Should have respected at least one retry delay (accounting for ±25% jitter, so minimum is 75% of base delay)
     assert elapsed >= retry_delay * 0.7
 

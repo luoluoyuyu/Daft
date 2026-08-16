@@ -4,8 +4,7 @@ Public API (layered)
 --------------------
 
 The package exposes two execution pathways with the same Parser/Compiler
-front-end but different transports. Both support the **native** and **Ray**
-Daft runners (within their respective constraints):
+front-end but different transports, both on the **native** Daft runner:
 
 ::
 
@@ -24,11 +23,11 @@ Daft runners (within their respective constraints):
    │ (bind + lower + pickle)  │    │ (bind only, keep lazy)   │
    │                          │    │                          │
    │ runner=NATIVE  → Local   │    │  → CompiledPlans         │
-   │ runner=RAY     → Distr.  │    │    (debug / direct       │
-   │  → bytes                 │    │     .collect())          │
-   │ (cloudpickled            │    └──────────────────────────┘
-   │  list[PhysicalPlanEnv.]) │                  │
-   └──────────────────────────┘                  ▼
+   │  → bytes                 │    │    (debug / direct       │
+   │ (cloudpickled            │    │     .collect())          │
+   │  list[PhysicalPlanEnv.]) │    └──────────────────────────┘
+   └──────────────────────────┘                  │
+              │                                 ▼
               │                       ┌──────────────────────────┐
               ▼                       │ Runtime.execute_plans    │
    ┌──────────────────────────┐       │ (CompiledPlans|list[DF]) │
@@ -36,8 +35,6 @@ Daft runners (within their respective constraints):
    │ (bytes)                  │       │   → list[daft.DataFrame] │
    │                          │       └──────────────────────────┘
    │ LOCAL  → NativeExecutor  │
-   │ DISTR. → DistributedPhys.│
-   │          PlanRunner      │
    │  → list[ExecutionResult] │
    └──────────────────────────┘
 
@@ -102,8 +99,7 @@ def submit(
     user_python_code: str,
     *,
     system_target_dir: str,
-    distributed_mode: bool = False,
-    runner: RunnerType | None = None,
+    runner: RunnerType = RunnerType.NATIVE,
     configure_runner: bool = True,
     job_namespace: str | None = None,
     extra_globals: Mapping[str, Any] | None = None,
@@ -114,17 +110,14 @@ def submit(
     Args:
         user_python_code: User script source.
         system_target_dir: Root directory for ``stream_job_<i>.parquet`` outputs.
-        distributed_mode: ``True`` selects the Ray runner, ``False`` native.
-        runner: Explicit runner override (takes precedence over
-            ``distributed_mode``).
+        runner: Daft runner to use; only ``RunnerType.NATIVE`` is supported.
         configure_runner: Whether to set the global Daft runner on init.
         job_namespace: Sub-directory under ``system_target_dir`` for this job.
         extra_globals: Optional static names to inject into the script globals.
         use_ir: Force the IR pipeline (``True``) or the in-process plan
-            pipeline (``False``); ``None`` (default) uses the IR pipeline
-            for both runners — both ``LocalPhysicalPlan`` and
-            ``DistributedPhysicalPlan`` envelopes round-trip through
-            ``cloudpickle`` and execute end-to-end.
+            pipeline (``False``); ``None`` (default) uses the IR pipeline.
+            The ``LocalPhysicalPlan`` envelope round-trips through
+            ``cloudpickle`` and executes end-to-end.
 
     Returns:
         ``list[ExecutionResult]`` for the IR path, or
@@ -132,7 +125,6 @@ def submit(
     """
     client = UniteStreamClient(
         system_target_dir,
-        distributed_mode=distributed_mode,
         runner=runner,
         configure_runner=configure_runner,
         extra_globals=extra_globals,

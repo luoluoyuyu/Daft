@@ -22,10 +22,6 @@ class UniteStreamNamespace:
         return wrap_result(daft.from_arrow(*args, **kwargs))
 
     @staticmethod
-    def from_dask_dataframe(*args: Any, **kwargs: Any) -> UniteStreamDataFrame:
-        return wrap_result(daft.from_dask_dataframe(*args, **kwargs))
-
-    @staticmethod
     def from_files(*args: Any, **kwargs: Any) -> UniteStreamDataFrame:
         return wrap_result(daft.from_files(*args, **kwargs))
 
@@ -44,10 +40,6 @@ class UniteStreamNamespace:
     @staticmethod
     def from_pylist(*args: Any, **kwargs: Any) -> UniteStreamDataFrame:
         return wrap_result(daft.from_pylist(*args, **kwargs))
-
-    @staticmethod
-    def from_ray_dataset(*args: Any, **kwargs: Any) -> UniteStreamDataFrame:
-        return wrap_result(daft.from_ray_dataset(*args, **kwargs))
 
     @staticmethod
     def range(*args: Any, **kwargs: Any) -> UniteStreamDataFrame:

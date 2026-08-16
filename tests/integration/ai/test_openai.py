@@ -19,9 +19,6 @@ from pydantic import BaseModel, Field
 import daft
 from daft.functions.ai import embed_text, prompt
 from daft.recordbatch import RecordBatch
-from tests.conftest import get_tests_daft_runner_name
-
-RUNNER_IS_NATIVE = get_tests_daft_runner_name() == "native"
 
 
 @pytest.fixture(scope="module", autouse=True)

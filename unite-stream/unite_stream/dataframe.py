@@ -102,12 +102,6 @@ class UniteStreamDataFrame:
         )
 
 
-    def to_dask_dataframe(self, *args, **kwargs):
-        raise AttributeError(
-            "UniteStreamDataFrame 不允许调用 'to_dask_dataframe'；请提交到 OUTPUT_STREAMS，由系统绑定写入并在 Runtime 执行。"
-        )
-
-
     def to_pandas(self, *args, **kwargs):
         raise AttributeError(
             "UniteStreamDataFrame 不允许调用 'to_pandas'；请提交到 OUTPUT_STREAMS，由系统绑定写入并在 Runtime 执行。"
@@ -129,12 +123,6 @@ class UniteStreamDataFrame:
     def to_pylist(self, *args, **kwargs):
         raise AttributeError(
             "UniteStreamDataFrame 不允许调用 'to_pylist'；请提交到 OUTPUT_STREAMS，由系统绑定写入并在 Runtime 执行。"
-        )
-
-
-    def to_ray_dataset(self, *args, **kwargs):
-        raise AttributeError(
-            "UniteStreamDataFrame 不允许调用 'to_ray_dataset'；请提交到 OUTPUT_STREAMS，由系统绑定写入并在 Runtime 执行。"
         )
 
 

@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import Iterator
 
 import pytest
-import ray
 
 import daft
 from daft.io.sink import DataSink, WriteResult
@@ -43,5 +42,5 @@ def test_sink_raises_unserializable_exception():
         df.write_sink(sink)
 
     e = exc_info.value
-    assert isinstance(e, (RuntimeError, ray.exceptions.RayTaskError))
+    assert isinstance(e, RuntimeError)
     assert "UnserializableException" in str(e)

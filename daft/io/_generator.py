@@ -40,9 +40,6 @@ def read_generator(
         >>> from daft.recordbatch.recordbatch import RecordBatch
         >>> from functools import partial
         >>>
-        >>> # Set runner to Ray for distributed processing
-        >>> daft.set_runner_ray()
-        >>>
         >>> # Helper function to generate data for each partition
         >>> def generate(num_rows: int):
         ...     data = {"ints": [i for i in range(num_rows)]}

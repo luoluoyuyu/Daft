@@ -11,7 +11,6 @@ import daft
 from daft import DataType, Series
 from daft.recordbatch import RecordBatch
 from daft.udf import metrics
-from tests.conftest import get_tests_daft_runner_name
 
 VALUES = list(range(1, 11))
 VALUES_SUM = sum(VALUES)
@@ -289,9 +288,6 @@ def test_udf_custom_metrics_shared_counter(use_process: bool) -> None:
 @pytest.mark.parametrize("concurrency", [None, 1])
 @pytest.mark.parametrize("is_async", [False, True])
 def test_udf_custom_metrics_cls(num_udfs: int, batch_size: int | None, concurrency: int | None, is_async: bool) -> None:
-    if concurrency is not None and get_tests_daft_runner_name() == "ray":
-        pytest.skip("Ray runner does not support UDF metrics for actor-based UDFs")
-
     df = daft.from_pydict({"value": VALUES})
     if batch_size is not None:
         df = df.into_batches(batch_size)

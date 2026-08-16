@@ -12,7 +12,6 @@ import pytest
 import daft
 from daft.io.object_store_options import io_config_to_storage_options
 from daft.logical.schema import Schema
-from tests.conftest import get_tests_daft_runner_name
 
 
 class _FakeCommitProperties:
@@ -123,29 +122,6 @@ def test_deltalake_write_overwrite_cloud(cloud_paths):
     assert read_delta.to_pyarrow_table() == df2.to_arrow()
 
 
-@pytest.mark.skipif(
-    get_tests_daft_runner_name() == "native",
-    reason="Native executor does not support repartitioning",
-)
-def test_deltalake_write_overwrite_multi_partition(tmp_path):
-    deltalake = pytest.importorskip("deltalake")
-    path = tmp_path / "some_table"
-    df1 = daft.from_pydict({"a": [1, 2, 3, 4]})
-    df1 = df1.repartition(2)
-    df1.write_deltalake(str(path))
-
-    df2 = daft.from_pydict({"a": [5, 6, 7, 8]})
-    df2 = df2.repartition(2)
-    result = df2.write_deltalake(str(path), mode="overwrite")
-    result = result.to_pydict()
-    assert result["operation"] == ["ADD", "ADD", "DELETE", "DELETE"]
-
-    read_delta = deltalake.DeltaTable(str(path))
-    expected_schema = Schema.from_pyarrow_schema(pa.schema(read_delta.schema().to_arrow()))
-    assert df2.schema() == expected_schema
-    assert read_delta.to_pyarrow_table() == df2.to_arrow()
-
-
 def test_deltalake_write_overwrite_schema(tmp_path):
     deltalake = pytest.importorskip("deltalake")
     path = tmp_path / "some_table"
@@ -194,25 +170,6 @@ def test_deltalake_write_ignore(tmp_path):
     expected_schema = Schema.from_pyarrow_schema(pa.schema(read_delta.schema().to_arrow()))
     assert df1.schema() == expected_schema
     assert read_delta.to_pyarrow_table() == df1.to_arrow()
-
-
-@pytest.mark.skipif(
-    get_tests_daft_runner_name() == "native",
-    reason="Native executor does not support repartitioning",
-)
-def test_deltalake_write_with_empty_partition(tmp_path, base_table):
-    deltalake = pytest.importorskip("deltalake")
-    path = tmp_path / "some_table"
-    df = daft.from_arrow(base_table).into_partitions(4)
-    result = df.write_deltalake(str(path))
-    result = result.to_pydict()
-    assert result["operation"] == ["ADD", "ADD", "ADD"]
-    assert result["rows"] == [1, 1, 1]
-
-    read_delta = deltalake.DeltaTable(str(path))
-    expected_schema = Schema.from_pyarrow_schema(pa.schema(read_delta.schema().to_arrow()))
-    assert df.schema() == expected_schema
-    assert read_delta.to_pyarrow_table() == base_table
 
 
 def check_equal_both_daft_and_delta_rs(df: daft.DataFrame, path: Path, sort_order: list[tuple[str, str]]):

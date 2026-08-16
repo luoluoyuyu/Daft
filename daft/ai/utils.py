@@ -5,7 +5,6 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, NoReturn
 
 from daft.ai.typing import UDFOptions
-from daft.daft import get_or_infer_runner_type
 from daft.errors import RetryAfterError
 
 if TYPE_CHECKING:
@@ -34,24 +33,9 @@ def get_torch_device() -> torch.device:
 
 def get_gpu_udf_options() -> UDFOptions:
     """Get UDF options for GPU-based providers."""
-    runner = get_or_infer_runner_type()
+    from daft.internal.gpu import cuda_visible_devices
 
-    # If native runner, use the number of GPUs visible to the current process
-    if runner == "native":
-        from daft.internal.gpu import cuda_visible_devices
-
-        num_gpus = len(cuda_visible_devices())
-    # If ray runner, use the number of GPUs currently on the cluster
-    elif runner == "ray":
-        import ray
-
-        num_gpus = 0
-        for node in ray.nodes():
-            if "Resources" in node:
-                if "GPU" in node["Resources"] and node["Resources"]["GPU"] > 0:
-                    num_gpus += int(node["Resources"]["GPU"])
-    else:
-        raise ValueError(f"Invalid runner type: {runner}, expected 'native' or 'ray'")
+    num_gpus = len(cuda_visible_devices())
 
     # If there are GPUs, set concurrency to the number of GPUs and num_gpus to 1
     if num_gpus > 0:

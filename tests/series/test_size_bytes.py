@@ -8,7 +8,6 @@ import pytest
 
 from daft.datatype import DataType
 from daft.series import Series
-from tests.conftest import get_tests_daft_runner_name
 from tests.series import ARROW_FLOAT_TYPES, ARROW_INT_TYPES
 
 
@@ -201,10 +200,6 @@ def test_series_struct_size_bytes(size, with_nulls) -> None:
     assert s.size_bytes() == get_total_buffer_size(data) + conversion_to_large_string_bytes
 
 
-@pytest.mark.skipif(
-    get_tests_daft_runner_name() == "ray",
-    reason="pyarrow extension types aren't supported on Ray clusters.",
-)
 @pytest.mark.parametrize("size", [1, 2, 8, 9, 16])
 @pytest.mark.parametrize("with_nulls", [True, False])
 def test_series_extension_type_size_bytes(uuid_ext_type, size, with_nulls) -> None:

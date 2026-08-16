@@ -18,13 +18,6 @@ from daft.subscribers.events import (
     OptimizationStarted,
     QueryFinished,
 )
-from tests.conftest import get_tests_daft_runner_name
-
-pytestmark = pytest.mark.skipif(
-    get_tests_daft_runner_name() != "native", reason="Only Native Runner supports subscribers right now"
-)
-
-
 @pytest.fixture(autouse=True)
 def cleanup_event_log() -> Iterator[None]:
     disable_event_log()

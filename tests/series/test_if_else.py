@@ -6,7 +6,6 @@ import pytest
 
 from daft import Series
 from daft.datatype import DataType
-from tests.conftest import get_tests_daft_runner_name
 
 
 @pytest.mark.parametrize("if_true_value", [1, None])
@@ -362,10 +361,6 @@ def test_series_if_else_struct(if_true, if_false, expected) -> None:
     assert result.to_pylist() == expected
 
 
-@pytest.mark.skipif(
-    get_tests_daft_runner_name() == "ray",
-    reason="pyarrow extension types aren't supported on Ray clusters.",
-)
 @pytest.mark.parametrize(
     ["if_true_storage", "if_false_storage", "expected_storage"],
     [

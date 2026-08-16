@@ -3,7 +3,7 @@
 import os
 from typing import TYPE_CHECKING, Union
 
-from daft import context, runners
+from daft import context
 from daft.api_annotations import PublicAPI
 from daft.daft import IOConfig, ScanOperatorHandle, StorageConfig
 from daft.dataframe import DataFrame
@@ -63,11 +63,7 @@ def read_deltalake(
     """
     from daft.io.delta_lake.delta_lake_scan import DeltaLakeScanOperator
 
-    # If running on Ray, we want to limit the amount of concurrency and requests being made.
-    # This is because each Ray worker process receives its own pool of thread workers and connections
-    multithreaded_io = (
-        (runners.get_or_create_runner().name != "ray") if _multithreaded_io is None else _multithreaded_io
-    )
+    multithreaded_io = True if _multithreaded_io is None else _multithreaded_io
 
     io_config = context.get_context().daft_planning_config.default_io_config if io_config is None else io_config
     storage_config = StorageConfig(multithreaded_io, io_config)

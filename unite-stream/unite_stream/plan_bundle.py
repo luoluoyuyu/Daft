@@ -1,7 +1,7 @@
 """In-process carrier type for compiled UniteStream plans.
 
 The cross-process pipeline uses ``bytes`` (cloudpickled
-``list[DistributedPhysicalPlan]``) as the transport between
+``list[PhysicalPlanEnvelope]``) as the transport between
 :class:`UniteStreamCompiler` and :class:`UniteStreamRuntime`. For symmetry,
 the in-process pipeline uses :class:`CompiledPlans` — a thin, named wrapper
 around ``list[daft.DataFrame]`` that additionally carries the job metadata

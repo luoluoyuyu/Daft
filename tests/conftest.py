@@ -32,13 +32,13 @@ def pytest_configure(config):
     )
 
 
-def get_tests_daft_runner_name() -> Literal["ray"] | Literal["native"]:
+def get_tests_daft_runner_name() -> Literal["native"]:
     """Test utility that checks the environment variable for the runner that is being used for the test."""
     name = os.getenv("DAFT_RUNNER")
     assert name is not None, "Tests must be run with $DAFT_RUNNER env var"
     name = name.lower()
 
-    assert name in {"ray", "native"}, f"Runner name not recognized: {name}"
+    assert name == "native", f"Runner name not recognized (only 'native' is supported): {name}"
     return name
 
 
@@ -231,7 +231,7 @@ def check_answer(df: daft.DataFrame, expected_answer: dict[str, Any], is_sorted:
 
 @pytest.fixture(
     scope="function",
-    params=[1, None] if get_tests_daft_runner_name() == "native" else [None],
+    params=[1, None],
 )
 def with_morsel_size(request):
     morsel_size = request.param

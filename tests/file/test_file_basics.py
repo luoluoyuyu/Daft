@@ -10,10 +10,8 @@ import pytest
 import daft
 from daft import DataType as dt
 from daft.functions import file, file_size
-from tests.conftest import get_tests_daft_runner_name
 
 
-@pytest.mark.skipif(get_tests_daft_runner_name() == "ray", reason="local only test")
 def test_path_file_is_readable_and_seekable(tmp_path: Path):
     temp_file = tmp_path / "test_file.txt"
     temp_file.write_text("hello world")
@@ -24,7 +22,6 @@ def test_path_file_is_readable_and_seekable(tmp_path: Path):
     assert not f.writable()
 
 
-@pytest.mark.skipif(get_tests_daft_runner_name() == "ray", reason="local only test")
 def test_path_to_file(tmp_path: Path):
     temp_file = tmp_path / "test_file.txt"
     temp_file.write_text("hello world")
@@ -40,7 +37,6 @@ def test_path_to_file(tmp_path: Path):
         assert data == b"hello world"
 
 
-@pytest.mark.skipif(get_tests_daft_runner_name() == "ray", reason="local only test")
 def test_can_convert_string_to_file_type():
     df = daft.from_pydict({"paths": ["./some_file.txt"]})
     assert df.schema() == daft.Schema.from_pydict({"paths": dt.string()})
@@ -50,7 +46,6 @@ def test_can_convert_string_to_file_type():
     assert df.schema() == daft.Schema.from_pydict({"paths": dt.file()})
 
 
-@pytest.mark.skipif(get_tests_daft_runner_name() == "ray", reason="local only test")
 def test_can_open_local_file(tmp_path: Path):
     # Create a file in the temporary directory
     temp_file = tmp_path / "test_file.txt"
@@ -68,7 +63,6 @@ def test_can_open_local_file(tmp_path: Path):
     assert df.to_pydict()["text"] == ["test content"]
 
 
-@pytest.mark.skipif(get_tests_daft_runner_name() == "ray", reason="local only test")
 def test_can_open_local_image_with_pil(tmp_path: Path):
     import numpy as np
     from PIL import Image
@@ -98,7 +92,6 @@ def test_can_open_local_image_with_pil(tmp_path: Path):
     assert df.to_pydict()["is_red_image"] == [True]
 
 
-@pytest.mark.skipif(get_tests_daft_runner_name() == "ray", reason="local only test")
 def test_compatibility_with_json_file(tmp_path: Path):
     import json
 

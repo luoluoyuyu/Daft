@@ -5,7 +5,6 @@ import pyarrow as pa
 import pytest
 
 import daft
-from tests.conftest import get_tests_daft_runner_name
 
 
 class MockException(Exception):
@@ -144,10 +143,6 @@ def test_iter_partitions(make_df, materialized, dynamic_batching):
             df = df.collect()
 
         parts = list(df.iter_partitions())
-        if get_tests_daft_runner_name() == "ray":
-            import ray
-
-            parts = ray.get(parts)
         parts = [_.to_pydict() for _ in parts]
 
         assert parts == [
@@ -200,16 +195,10 @@ def test_iter_partitions_exception(make_df, dynamic_batching):
 
         it = df.iter_partitions()
         part = next(it)
-        if get_tests_daft_runner_name() == "ray":
-            import ray
-
-            part = ray.get(part)
         part = part.to_pydict()
 
         assert part == {"a": [0, 1], "b": [0, 1]}
 
         # Ensure the exception does trigger if execution continues.
         with pytest.raises(MockException):
-            res = list(it)
-            if get_tests_daft_runner_name() == "ray":
-                ray.get(res)
+            list(it)

@@ -10,7 +10,6 @@ from packaging.version import parse
 
 from daft.daft import ImageMode, PyDataType, PyMediaType, PyTimeUnit, sql_datatype
 from daft.dependencies import np, pa
-from daft.runners import get_or_create_runner
 
 if TYPE_CHECKING:
     import builtins
@@ -864,15 +863,6 @@ class DataType:
         elif isinstance(arrow_type, pa.BaseExtensionType):
             name = arrow_type.extension_name
 
-            if (get_or_create_runner().name == "ray") and (
-                type(arrow_type).__reduce__ == pa.BaseExtensionType.__reduce__
-            ):
-                raise ValueError(
-                    f"You are attempting to use a Extension Type: {arrow_type} with the default pyarrow `__reduce__` which breaks pickling for Extensions"
-                    "To fix this, implement your own `__reduce__` on your extension type"
-                    "For more details see this issue: "
-                    "https://github.com/apache/arrow/issues/35599"
-                )
             try:
                 metadata = arrow_type.__arrow_ext_serialize__().decode()
             except AttributeError:

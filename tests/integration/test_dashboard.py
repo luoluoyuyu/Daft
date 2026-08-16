@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import contextlib
 import os
 import subprocess
 import sys
@@ -10,20 +9,6 @@ import pytest
 import requests
 
 import daft
-from daft import udf
-
-
-@contextlib.contextmanager
-def with_null_env():
-    old_daft_runner = os.getenv("DAFT_RUNNER")
-    if old_daft_runner is not None:
-        del os.environ["DAFT_RUNNER"]
-
-    try:
-        yield
-    finally:
-        if old_daft_runner is not None:
-            os.environ["DAFT_RUNNER"] = old_daft_runner
 
 
 @pytest.fixture(scope="module")
@@ -127,7 +112,7 @@ def test_dashboard_queries_api(dashboard_url):
     assert "entrypoint" in latest_query
 
     # Optional fields (may be omitted by serde if None)
-    # end_sec, ray_dashboard_url, error_message
+    # end_sec, error_message
 
     # Verify field types/values
     assert isinstance(latest_query["id"], str)
@@ -145,31 +130,12 @@ def test_dashboard_queries_api(dashboard_url):
     if "end_sec" in latest_query and latest_query["end_sec"] is not None:
         assert isinstance(latest_query["end_sec"], float)
 
-    # The runner might be "Native (Swordfish)" or "Ray (Flotilla)" depending on execution
-    assert latest_query["runner"] in ["Native (Swordfish)", "Ray (Flotilla)"]
-
-
-@pytest.mark.integration
-def test_dashboard_ray_flotilla(dashboard_url):
-    daft.set_runner_ray(address="auto", noop_if_initialized=True)
-
-    @udf(return_dtype=daft.DataType.int64())
-    def slow_inc(x):
-        time.sleep(0.1)
-        return [i + 1 for i in x.to_pylist()]
-
-    df = daft.from_pydict({"a": list(range(100))})
-    df = df.repartition(5)
-    df = df.with_column("b", slow_inc(df["a"]))
-    df = df.repartition(2)
-
-    result = df.collect()
-    assert len(result) == 100
+    assert latest_query["runner"] == "Native (Swordfish)"
 
 
 @pytest.mark.integration
 def test_dashboard_native_swordfish(dashboard_url):
-    daft.set_runner_ray(address="auto", noop_if_initialized=True)
+    daft.set_runner_native()
 
     df = daft.from_pydict({"a": list(range(100))})
     df = df.with_column("b", df["a"] + 1)
@@ -177,20 +143,3 @@ def test_dashboard_native_swordfish(dashboard_url):
 
     result = df.collect()
     assert len(result) == 100
-
-
-@pytest.mark.integration
-def test_enable_dashboard_for_ray_runner(dashboard_url):
-    get_or_infer_runner_type_py_script = """
-import daft
-daft.range(start=0, end=1024, partitions=10).collect()
-    """
-
-    with with_null_env():
-        result = subprocess.run(
-            [sys.executable, "-c", get_or_infer_runner_type_py_script],
-            capture_output=True,
-            env={"DAFT_RUNNER": "ray", "DAFT_DASHBOARD_URL": dashboard_url},
-        )
-        assert result.returncode == 0
-        assert "Dashboard isn't currently supported in Ray Runner" not in result.stderr.decode()

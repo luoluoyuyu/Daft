@@ -119,7 +119,7 @@ compiler = UniteStreamCompiler(system_target_dir="./lake/out/")
 ir_bytes = compiler.compile_and_extract_ir(script)
 
 # 3. Runtime：反序列化执行（或直接 execute_plans）
-runtime = UniteStreamRuntime(distributed_mode=False)
+runtime = UniteStreamRuntime()
 results = runtime.execute_ir(ir_bytes)
 # results = runtime.execute_plans(plans)    # ← 也行，绕过 IR
 ```
@@ -212,7 +212,7 @@ with ThreadPoolExecutor(max_workers=8) as pool:
 
 - **SQL 接口**：`sql` / `sql_expr` / `read_sql`
 - DataFrame 物化 / 导出：`collect` / `show` / `count_rows` / `explain` / 全部 `write_*` / 全部 `to_*` / `iter_rows` / `iter_partitions` / `metrics` / `num_partitions` / `pivot` / `from_plan_bytes` / `to_plan_bytes`
-- 顶层 Parser/Runtime 边界：`serialize_plan` / `deserialize_plan` / `execute_plan` / `execute_from_bytes` / `set_runner_native` / `set_runner_ray` / `get_or_create_runner` / `get_or_infer_runner_type` / `write_table`
+- 顶层 Parser/Runtime 边界：`serialize_plan` / `deserialize_plan` / `execute_plan` / `execute_from_bytes` / `set_runner_native` / `get_or_create_runner` / `get_or_infer_runner_type` / `write_table`
 
 ## 异常体系
 

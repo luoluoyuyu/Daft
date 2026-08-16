@@ -5,7 +5,6 @@ from daft.daft import get_runner as _get_runner_internal
 from daft.daft import get_or_create_runner as _get_or_create_runner
 from daft.daft import get_or_infer_runner_type as _get_or_infer_runner_type
 from daft.daft import set_runner_native as _set_runner_native
-from daft.daft import set_runner_ray as _set_runner_ray
 
 if TYPE_CHECKING:
     from daft.runners.runner import Runner
@@ -81,27 +80,3 @@ def set_runner_native(num_threads: int | None = None) -> Runner[PartitionT]:
     """
     return _set_runner_native(num_threads)
 
-
-def set_runner_ray(
-    address: str | None = None,
-    noop_if_initialized: bool = False,
-    force_client_mode: bool = False,
-) -> Runner[PartitionT]:
-    """Configure Daft to execute dataframes using the Ray distributed computing framework.
-
-    Args:
-        address: Ray cluster address to connect to. If None, connects to or starts a local Ray instance.
-        noop_if_initialized: If True, skip initialization if Ray is already running.
-        force_client_mode: If True, forces Ray to run in client mode.
-
-    Returns:
-        Runner[PartitionT]: A runner object with the Ray runner's configurations.
-
-    Note:
-        Can also be configured via environment variable: DAFT_RUNNER=ray
-    """
-    return _set_runner_ray(
-        address=address,
-        noop_if_initialized=noop_if_initialized,
-        force_client_mode=force_client_mode,
-    )

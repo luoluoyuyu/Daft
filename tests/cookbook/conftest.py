@@ -10,7 +10,6 @@ import daft
 from daft.datatype import DataType
 from daft.expressions import col
 from daft.series import Series
-from tests.conftest import get_tests_daft_runner_name
 from tests.cookbook.assets import COOKBOOK_DATA_CSV
 
 COLUMNS = [
@@ -47,7 +46,7 @@ def service_requests_csv_pd_df():
 
 @pytest.fixture(
     scope="module",
-    params=[1, 2] if get_tests_daft_runner_name() != "native" else [1],
+    params=[1],
 )
 def repartition_nparts(request):
     """Adds a `n_repartitions` parameter to test cases which provides the number of partitions that the test case should repartition its dataset into for testing."""

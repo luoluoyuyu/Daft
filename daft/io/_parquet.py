@@ -2,7 +2,7 @@
 # isort: dont-add-import: from __future__ import annotations
 
 
-from daft import context, runners
+from daft import context
 from daft.api_annotations import PublicAPI
 from daft.daft import (
     FileFormatConfig,
@@ -63,11 +63,7 @@ def read_parquet(
     if isinstance(path, list) and len(path) == 0:
         raise ValueError("Cannot read DataFrame from empty list of Parquet filepaths")
 
-    # If running on Ray, we want to limit the amount of concurrency and requests being made.
-    # This is because each Ray worker process receives its own pool of thread workers and connections
-    multithreaded_io = (
-        (runners.get_or_create_runner().name != "ray") if _multithreaded_io is None else _multithreaded_io
-    )
+    multithreaded_io = True if _multithreaded_io is None else _multithreaded_io
 
     if isinstance(coerce_int96_timestamp_unit, str):
         coerce_int96_timestamp_unit = TimeUnit.from_str(coerce_int96_timestamp_unit)

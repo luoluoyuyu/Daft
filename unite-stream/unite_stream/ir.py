@@ -3,8 +3,8 @@
 Both Daft physical plan types ship with Rust-side bincode + serde state
 serializers (``impl_bincode_py_state_serialization!``) and therefore satisfy
 Python's pickle protocol via ``__getstate__`` / ``__reduce__``. UniteStream
-wraps them in :class:`PhysicalPlanEnvelope` so the **native** and **Ray**
-execution paths share one symmetric carrier:
+wraps them in :class:`PhysicalPlanEnvelope` so the native execution path has
+a single transportable carrier:
 
 ::
 
@@ -27,44 +27,35 @@ from typing import Any
 
 
 class PlanKind(str, enum.Enum):
-    """Which Daft physical plan species is wrapped in an envelope.
-
-    The compiler emits ``LOCAL`` for the native runner path and
-    ``DISTRIBUTED`` for the Ray runner path. The runtime dispatches on this
-    field to pick the right executor (``NativeExecutor`` vs
-    ``DistributedPhysicalPlanRunner``).
-    """
+    """Which Daft physical plan species is wrapped in an envelope."""
 
     LOCAL = "local"
-    DISTRIBUTED = "distributed"
 
 
 @dataclass(frozen=True)
 class PhysicalPlanEnvelope:
     """Cloudpickle-able container around a Daft physical plan.
 
-    The envelope captures everything :class:`daft.daft.NativeExecutor` /
-    :class:`daft.daft.DistributedPhysicalPlanRunner` needs to execute the
-    plan independently — including the **in-memory source data** that
+    The envelope captures everything :class:`daft.daft.NativeExecutor`
+    needs to execute the plan independently — including the **in-memory
+    source data** that
     ``daft.from_pydict`` / ``daft.from_arrow`` / etc. register into Daft's
     partition cache (without it the pipeline's source operators have no
     inputs and silently stall).
 
     Attributes:
         stream_index: 0-based index in ``OUTPUT_STREAMS``.
-        kind: ``LOCAL`` (LocalPhysicalPlan) or ``DISTRIBUTED``
-            (DistributedPhysicalPlan).
-        plan: The underlying ``daft.daft.LocalPhysicalPlan`` or
-            ``daft.daft.DistributedPhysicalPlan`` instance. Both implement
-            ``__getstate__`` / ``__reduce__`` so the envelope is fully
-            cloudpickle-able.
+        kind: Always ``PlanKind.LOCAL`` (LocalPhysicalPlan).
+        plan: The underlying ``daft.daft.LocalPhysicalPlan`` instance. It
+            implements ``__getstate__`` / ``__reduce__`` so the envelope is
+            fully cloudpickle-able.
         inputs: ``source_id → input`` map produced by
             ``LocalPhysicalPlan.from_logical_plan_builder`` and consumed by
-            ``NativeExecutor.run``. Empty / ignored for distributed plans.
+            ``NativeExecutor.run``.
         psets: Snapshot of Daft's process-global partition_set_cache
             (``partition_set_id → list[PyMicroPartition]``). Required by the
             native executor to feed source operators when the plan was built
-            from in-memory data. Empty / ignored for distributed plans.
+            from in-memory data.
         output_path: Parquet write target bound by the compiler. ``None``
             when no write binding was applied (parse-only plans).
         job_namespace: Sub-directory name under the compiler's target dir.
@@ -81,9 +72,6 @@ class PhysicalPlanEnvelope:
 
     def is_local(self) -> bool:
         return self.kind is PlanKind.LOCAL
-
-    def is_distributed(self) -> bool:
-        return self.kind is PlanKind.DISTRIBUTED
 
 
 @dataclass(frozen=True)

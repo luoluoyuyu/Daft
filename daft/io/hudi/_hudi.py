@@ -2,7 +2,7 @@
 # isort: dont-add-import: from __future__ import annotations
 
 
-from daft import context, runners
+from daft import context
 from daft.api_annotations import PublicAPI
 from daft.daft import IOConfig, ScanOperatorHandle, StorageConfig
 from daft.dataframe import DataFrame
@@ -42,7 +42,7 @@ def read_hudi(
 
     io_config = context.get_context().daft_planning_config.default_io_config if io_config is None else io_config
 
-    multithreaded_io = runners.get_or_create_runner().name != "ray"
+    multithreaded_io = True
     storage_config = StorageConfig(multithreaded_io, io_config)
 
     hudi_operator = HudiScanOperator(table_uri, storage_config=storage_config)

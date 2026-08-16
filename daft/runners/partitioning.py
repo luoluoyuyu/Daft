@@ -14,7 +14,6 @@ from daft.recordbatch import MicroPartition
 if TYPE_CHECKING:
     import pandas as pd
     import pyarrow as pa
-    from ray import ObjectRef
 
     from daft.expressions.expressions import Expression
     from daft.logical.schema import Schema
@@ -166,7 +165,7 @@ class Boundaries:
         return self_upper < other_upper
 
 
-PartitionT = TypeVar("PartitionT", bound="ObjectRef | MicroPartition")
+PartitionT = TypeVar("PartitionT", bound="MicroPartition")
 
 
 class MaterializedResult(Generic[PartitionT]):

@@ -3,7 +3,7 @@
 
 from typing import TYPE_CHECKING
 
-from daft import context, runners
+from daft import context
 from daft.api_annotations import PublicAPI
 from daft.daft import StorageConfig
 from daft.dataframe import DataFrame
@@ -144,7 +144,7 @@ def read_paimon(
     io_config = io_config or _convert_paimon_catalog_options_to_io_config(catalog_options)
     io_config = io_config or context.get_context().daft_planning_config.default_io_config
 
-    multithreaded_io = runners.get_or_create_runner().name != "ray"
+    multithreaded_io = True
     storage_config = StorageConfig(multithreaded_io, io_config)
 
     warehouse = catalog_options.get("warehouse", "")

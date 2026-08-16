@@ -7,11 +7,9 @@ from typing import TYPE_CHECKING, Any, Union
 from daft.api_annotations import PublicAPI
 
 if TYPE_CHECKING:
-    import dask
     import numpy as np
     import pandas as pd
     import pyarrow as pa
-    from ray.data.dataset import Dataset as RayDataset
 
     from daft.dataframe import DataFrame
 
@@ -152,87 +150,3 @@ def from_pandas(data: Union["pd.DataFrame", list["pd.DataFrame"]]) -> "DataFrame
     from daft import DataFrame
 
     return DataFrame._from_pandas(data)
-
-
-@PublicAPI
-def from_ray_dataset(ds: "RayDataset") -> "DataFrame":
-    """Creates a DataFrame from a Ray Dataset.
-
-    Args:
-        ds: The Ray Dataset to create a Daft DataFrame from.
-
-    Returns:
-        DataFrame: Daft DataFrame created from the provided Ray dataset.
-
-    Note:
-        This function can only work if Daft is running using the RayRunner
-
-    Examples:
-        >>> import ray
-        >>> import daft
-        >>>
-        >>> daft.set_runner_ray()  # doctest: +SKIP
-        >>>
-        >>> ds = ray.data.from_items([{"a": 1, "b": "foo"}, {"a": 2, "b": "bar"}])  # doctest: +SKIP
-        >>> df = daft.from_ray_dataset(ds)  # doctest: +SKIP
-        >>> df.show()  # doctest: +SKIP
-        ╭───────┬────────╮
-        │ a     ┆ b      │
-        │ ---   ┆ ---    │
-        │ Int64 ┆ String │
-        ╞═══════╪════════╡
-        │ 1     ┆ foo    │
-        ├╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌┤
-        │ 2     ┆ bar    │
-        ╰───────┴────────╯
-        <BLANKLINE>
-        (Showing first 2 of 2 rows)
-
-    """
-    from daft import DataFrame
-
-    return DataFrame._from_ray_dataset(ds)
-
-
-@PublicAPI
-def from_dask_dataframe(ddf: "dask.DataFrame") -> "DataFrame":
-    """Creates a Daft DataFrame from a Dask DataFrame.
-
-    The provided Dask DataFrame must have been created using [Dask-on-Ray](https://docs.ray.io/en/latest/ray-more-libs/dask-on-ray.html).
-
-    Args:
-        ddf: The Dask DataFrame to create a Daft DataFrame from.
-
-    Returns:
-        DataFrame: Daft DataFrame created from the provided Dask DataFrame.
-
-    Note:
-        This function can only work if Daft is running using the RayRunner
-
-    Examples:
-        >>> import dask.dataframe as dd
-        >>> import pandas as pd
-        >>> import daft
-        >>> import ray
-        >>>
-        >>> daft.set_runner_ray()  # doctest: +SKIP
-        >>>
-        >>> ddf = dd.from_pandas(pd.DataFrame({"a": [1, 2], "b": ["foo", "bar"]}), npartitions=2)  # doctest: +SKIP
-        >>> df = daft.from_dask_dataframe(ddf)  # doctest: +SKIP
-        >>> df.show()  # doctest: +SKIP
-        ╭───────┬────────╮
-        │ a     ┆ b      │
-        │ ---   ┆ ---    │
-        │ Int64 ┆ String │
-        ╞═══════╪════════╡
-        │ 1     ┆ foo    │
-        ├╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌┤
-        │ 2     ┆ bar    │
-        ╰───────┴────────╯
-        <BLANKLINE>
-        (Showing first 2 of 2 rows)
-
-    """
-    from daft import DataFrame
-
-    return DataFrame._from_dask_dataframe(ddf)

@@ -5,10 +5,8 @@ from pathlib import Path
 import pytest
 
 import daft
-from tests.conftest import get_tests_daft_runner_name
 
 
-@pytest.mark.skipif(get_tests_daft_runner_name() == "ray", reason="local only test")
 def test_df_construct_from_file(tmp_path: Path):
     temp_file = tmp_path / "test_file.txt"
     temp_file.write_text("hello world from file")

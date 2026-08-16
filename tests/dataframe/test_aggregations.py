@@ -10,11 +10,9 @@ import pytest
 
 import daft
 from daft import col
-from daft.context import get_context
 from daft.datatype import DataType
 from daft.errors import ExpressionTypeError
 from daft.utils import freeze
-from tests.conftest import get_tests_daft_runner_name
 from tests.utils import sort_arrow_table, sort_pydict
 
 
@@ -583,37 +581,6 @@ def test_groupby_agg_pyobjects_list():
     assert set(res["list"][1]) == set([objects[1], objects[3]])
 
 
-@pytest.mark.parametrize("shuffle_aggregation_default_partitions", [None, 20])
-def test_groupby_result_partitions_smaller_than_input(shuffle_aggregation_default_partitions, with_morsel_size):
-    if shuffle_aggregation_default_partitions is None:
-        min_partitions = get_context().daft_execution_config.shuffle_aggregation_default_partitions
-    else:
-        min_partitions = shuffle_aggregation_default_partitions
-
-    with daft.execution_config_ctx(shuffle_aggregation_default_partitions=shuffle_aggregation_default_partitions):
-        for partition_size in [1, min_partitions, min_partitions + 1]:
-            df = daft.from_pydict(
-                {
-                    "group": [i for i in range(min_partitions + 1)],
-                    "value": [i for i in range(min_partitions + 1)],
-                }
-            )
-            df = df.into_partitions(partition_size)
-
-            df = df.groupby(col("group")).agg(
-                [
-                    col("value").sum().alias("sum"),
-                    col("value").mean().alias("mean"),
-                    col("value").min().alias("min"),
-                ]
-            )
-
-            df = df.collect()
-
-            if get_tests_daft_runner_name() != "native":
-                assert df._result.num_partitions() == min(min_partitions, partition_size)
-
-
 @pytest.mark.parametrize("repartition_nparts", [1, 2, 4])
 def test_agg_any_value(make_df, repartition_nparts, with_morsel_size):
     daft_df = make_df(
@@ -1121,26 +1088,6 @@ def test_join_followed_by_groupby(make_df, repartition_nparts, with_morsel_size)
     }
 
     assert sorted_result == expected
-
-
-@pytest.mark.skipif(get_tests_daft_runner_name() != "ray", reason="Tests Flotilla-specific behavior")
-def test_join_on_hash_partitioned_df_does_not_shuffle():
-    df = daft.from_pydict({"a": [1, 2, 3], "b": [4, 5, 6]})
-    df = df.repartition(2, "a")
-    df = df.groupby("a").agg(col("b").sum())
-
-    plan_io = StringIO()
-    df.explain(True, file=plan_io)
-    captured = plan_io.getvalue()
-
-    # The logical plan should retain the user repartition, and the physical plan should
-    # execute it as a single Ray shuffle without adding an extra shuffle for the groupby.
-    assert captured.count("Repartition") == 2, (
-        f"Expected 'Repartition' to appear twice in logical plans, got {captured.count('Repartition')}\n{captured}"
-    )
-    assert captured.count("RayShuffle") == 1, (
-        f"Expected a single physical RayShuffle, got {captured.count('RayShuffle')}\n{captured}"
-    )
 
 
 def test_agg_concat_with_delimiter(make_df):

@@ -6,7 +6,6 @@ import pytest
 
 from daft.datatype import DataType
 from daft.series import Series
-from tests.conftest import get_tests_daft_runner_name
 from tests.series import ARROW_FLOAT_TYPES, ARROW_INT_TYPES, ARROW_STRING_TYPES
 
 
@@ -135,10 +134,6 @@ def test_series_struct_take() -> None:
     assert result.to_pylist() == expected
 
 
-@pytest.mark.skipif(
-    get_tests_daft_runner_name() == "ray",
-    reason="pyarrow extension types aren't supported on Ray clusters.",
-)
 def test_series_extension_type_take(uuid_ext_type) -> None:
     pydata = [f"{i}".encode() for i in range(6)]
     pydata[2] = None

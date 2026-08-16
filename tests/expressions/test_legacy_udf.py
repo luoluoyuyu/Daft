@@ -24,7 +24,6 @@ from daft.expressions.testing import expr_structurally_equal
 from daft.recordbatch import MicroPartition
 from daft.series import Series
 from daft.udf import udf
-from tests.conftest import get_tests_daft_runner_name
 
 
 def test_udf():
@@ -300,10 +299,7 @@ def test_class_udf_initialization_error(use_actor_pool):
 
         assert exc_info.value.message.startswith("User-defined function")
         assert exc_info.value.message.endswith("failed to initialize")
-        if get_tests_daft_runner_name() == "native":
-            assert (
-                isinstance(exc_info.value.__cause__, RuntimeError) and str(exc_info.value.__cause__) == "UDF INIT ERROR"
-            )
+        assert isinstance(exc_info.value.__cause__, RuntimeError) and str(exc_info.value.__cause__) == "UDF INIT ERROR"
 
 
 @pytest.mark.parametrize("use_actor_pool", [False, True])
@@ -521,40 +517,6 @@ def test_udf_with_error(use_actor_pool):
     assert re.search(pattern, str(exc_info.value)), f"String doesn't end with expected pattern: {exc_info.value!s}"
 
 
-@pytest.mark.skipif(get_tests_daft_runner_name() != "ray", reason="Tests Flotilla-specific behavior")
-@pytest.mark.parametrize("use_actor_pool", [True, False])
-def test_udf_retry_with_process_killed_ray(use_actor_pool):
-    import os
-
-    import ray
-
-    df = daft.from_pydict({"a": [1, 2, 3], "b": ["foo", "bar", "baz"]})
-
-    @ray.remote
-    class HasFailedAlready:
-        def __init__(self):
-            self.has_failed = False
-
-        def should_fail(self) -> bool:
-            if self.has_failed:
-                return False
-            self.has_failed = True
-            return True
-
-    @udf(return_dtype=DataType.int64())
-    def random_exit_udf(a, b, has_failed_already: HasFailedAlready):
-        if ray.get(has_failed_already.should_fail.remote()):
-            os._exit(0)
-        return a
-
-    if use_actor_pool:
-        random_exit_udf = random_exit_udf.with_concurrency(1)
-
-    expr = random_exit_udf(col("a"), col("b"), HasFailedAlready.remote())
-    df = df.select(expr)
-    df.collect()
-
-
 @pytest.mark.parametrize("batch_size", [None, 1, 2, 3, 10])
 @pytest.mark.parametrize("use_actor_pool", [False, True])
 def test_multiple_udfs_different_columns(batch_size, use_actor_pool):
@@ -643,10 +605,6 @@ def test_multiple_udfs_same_column(batch_size, use_actor_pool):
     assert result.sort("doubled").to_pydict() == expected
 
 
-@pytest.mark.skipif(
-    get_tests_daft_runner_name() == "ray",
-    reason="Ray runner will always run UDFs on separate processes",
-)
 @pytest.mark.parametrize("batch_size", [None, 1, 2, 3, 10])
 def test_run_udf_on_same_process(batch_size):
     df = daft.from_pydict({"a": [None] * 3})
@@ -659,10 +617,6 @@ def test_run_udf_on_same_process(batch_size):
     assert result.to_pydict() == {"udf_1": [os.getpid()] * len(df)}
 
 
-@pytest.mark.skipif(
-    get_tests_daft_runner_name() == "ray",
-    reason="Ray runner will always run UDFs on separate processes",
-)
 @pytest.mark.parametrize("batch_size", [None, 1, 2, 10])
 def test_run_udf_on_separate_process(batch_size):
     df = daft.from_pydict({"a": [None] * 3})
@@ -675,35 +629,6 @@ def test_run_udf_on_separate_process(batch_size):
     current_pid = os.getpid()
     for pid in result.to_pydict()["udf_1"]:
         assert pid != current_pid
-
-
-@pytest.mark.skipif(get_tests_daft_runner_name() != "ray", reason="Tests Flotilla-specific behavior")
-def test_udf_fails_with_no_actors_schedulable():
-    with execution_config_ctx(actor_udf_ready_timeout=10):
-        df = daft.from_pydict({"a": [1, 2, 3]})
-
-        # Request for 1 actor, with 50 gpus. This will never be scheduled.
-        @udf(return_dtype=DataType.int64(), concurrency=1, num_gpus=50)
-        def udf_1(data):
-            return data
-
-        result = df.select(udf_1(col("a")).alias("udf_1"))
-        with pytest.raises(RuntimeError, match="RuntimeError: UDF actors failed to start within 10 seconds"):
-            result.collect()
-
-
-@pytest.mark.skipif(get_tests_daft_runner_name() != "ray", reason="Tests Flotilla-specific behavior")
-def test_udf_succeeds_with_some_actors_schedulable():
-    with execution_config_ctx(actor_udf_ready_timeout=60):
-        df = daft.from_pydict({"a": [1, 2, 3]})
-
-        # Request for 100 actors, with 1 cpu. Not all will be scheduled, but the query can still run.
-        @udf(return_dtype=DataType.int64(), concurrency=100, num_cpus=1)
-        def udf_1(data):
-            return data
-
-        result = df.select(udf_1(col("a")).alias("udf_1")).to_pydict()
-        assert result == {"udf_1": [1, 2, 3]}
 
 
 def test_udf_error_serialize_err():

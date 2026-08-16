@@ -13,7 +13,6 @@ import daft
 from daft import DataType, TimeUnit
 from daft.recordbatch import MicroPartition
 from daft.series import Series
-from tests.conftest import get_tests_daft_runner_name
 
 PYTHON_TYPE_ARRAYS = {
     "int": [1, 2],
@@ -174,9 +173,6 @@ ARROW_TYPE_ARRAYS["canonical_tensor"] = pa.FixedShapeTensorArray.from_numpy_ndar
 
 
 def _with_uuid_ext_type(uuid_ext_type) -> tuple[dict, dict]:
-    if get_tests_daft_runner_name() == "ray":
-        # pyarrow extension types aren't supported in Ray clusters yet.
-        return ARROW_ROUNDTRIP_TYPES, ARROW_TYPE_ARRAYS
     arrow_roundtrip_types = ARROW_ROUNDTRIP_TYPES.copy()
     arrow_type_arrays = ARROW_TYPE_ARRAYS.copy()
     arrow_roundtrip_types["ext_type"] = uuid_ext_type
@@ -303,10 +299,6 @@ def test_from_pydict_arrow_struct_array() -> None:
     assert daft_recordbatch.to_arrow()["a"].combine_chunks() == expected
 
 
-@pytest.mark.skipif(
-    get_tests_daft_runner_name() == "ray",
-    reason="pyarrow extension types aren't supported on Ray clusters.",
-)
 def test_from_pydict_arrow_extension_array(uuid_ext_type) -> None:
     pydata = [f"{i}".encode() for i in range(6)]
     pydata[2] = None
@@ -512,10 +504,6 @@ def test_from_arrow_map_array() -> None:
     assert daft_recordbatch.to_pydict(maps_as_pydicts="lossy")["a"] == [{1.0: 1, 2.0: 2}, {3.0: 3, 4.0: 4}]
 
 
-@pytest.mark.skipif(
-    get_tests_daft_runner_name() == "ray",
-    reason="pyarrow extension types aren't supported on Ray clusters.",
-)
 def test_from_arrow_extension_array(uuid_ext_type) -> None:
     pydata = [f"{i}".encode() for i in range(6)]
     pydata[2] = None

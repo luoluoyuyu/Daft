@@ -55,13 +55,11 @@ from daft.utils import (
 )
 
 if TYPE_CHECKING:
-    import dask
     import deltalake
     import pandas
     import pyarrow
     import pyiceberg
     import pypaimon
-    import ray
     import torch
     from sqlalchemy.engine import Connection
 
@@ -349,8 +347,6 @@ class DataFrame:
         Examples:
             >>> import daft
             >>>
-            >>> daft.set_runner_ray()  # doctest: +SKIP
-            >>>
             >>> # Create a DataFrame with 1000 rows
             >>> df = daft.from_pydict({"x": list(range(1000))})
             >>>
@@ -585,11 +581,10 @@ class DataFrame:
     @DataframePublicAPI
     def iter_partitions(
         self, results_buffer_size: int | None | Literal["num_cpus"] = "num_cpus"
-    ) -> Iterator[Union[MicroPartition, "ray.ObjectRef"]]:
+    ) -> Iterator[MicroPartition]:
         """Begin executing this dataframe and return an iterator over the partitions.
 
-        Each partition will be returned as a daft.recordbatch object (if using Python runner backend)
-        or a ray ObjectRef (if using Ray runner backend).
+        Each partition will be returned as a daft.recordbatch object.
 
         Args:
             results_buffer_size: how many partitions to allow in the results buffer (defaults to the total number of CPUs
@@ -606,14 +601,10 @@ class DataFrame:
             The default value is the total number of CPUs available on the current machine.
 
         Returns:
-            Iterator[Union[MicroPartition, ray.ObjectRef]]: An iterator over the partitions of the DataFrame.
-            Each partition is a MicroPartition object (if using Python runner backend) or a ray ObjectRef
-            (if using Ray runner backend).
+            Iterator[MicroPartition]: An iterator over the partitions of the DataFrame.
 
         Examples:
             >>> import daft
-            >>>
-            >>> daft.set_runner_ray()  # doctest: +SKIP
             >>>
             >>> df = daft.from_pydict({"foo": [1, 2, 3], "bar": ["a", "b", "c"]}).into_partitions(2)
             >>> for part in df.iter_partitions():
@@ -2270,7 +2261,6 @@ class DataFrame:
 
         Examples:
             >>> import daft
-            >>> daft.set_runner_ray()  # doctest: +SKIP
             >>>
             >>> df = daft.from_pydict({"a": [1, 2, 3, 4]}).into_partitions(2)
             >>> df = df._add_monotonically_increasing_id()
@@ -2564,12 +2554,6 @@ class DataFrame:
         if size is not None:
             if size < 0:
                 raise ValueError(f"size should be non-negative, but got {size}")
-            if get_or_create_runner().name == "ray":
-                raise ValueError(
-                    "Sample by size only works on the native runner right now. "
-                    "Please use `daft.set_runner_native()` to switch to the native runner, "
-                    "or use `fraction` instead of `size` for sampling."
-                )
 
         builder = self._builder.sample(fraction, size, with_replacement, seed)
         return DataFrame(builder)
@@ -2758,7 +2742,6 @@ class DataFrame:
             >>> import pyarrow.parquet as pq
             >>> df = daft.from_pydict({"id": [1, 2, 3, 4], "value": ["a", "b", "c", "d"]})
             >>> # Filter out rows where 'id' already exists in local Parquet data
-            >>> daft.set_runner_ray()  # doctest: +SKIP
             >>> with tempfile.TemporaryDirectory() as tmpdir:  # doctest: +SKIP
             ...     pq.write_table(pa.table({"id": [1, 3]}), Path(tmpdir) / "part-0.parquet")
             ...     filtered_df = df.skip_existing(
@@ -3246,7 +3229,7 @@ class DataFrame:
         """
         if get_or_create_runner().name == "native":
             warnings.warn(
-                "DataFrame.repartition not supported on the NativeRunner. This will be a no-op. Please use the RayRunner via `daft.set_runner_ray()` instead if you need to repartition."
+                "DataFrame.repartition is not supported on the native runner and will be a no-op."
             )
         if len(partition_by) == 0:
             warnings.warn(
@@ -3294,7 +3277,7 @@ class DataFrame:
         """
         if get_or_create_runner().name == "native":
             warnings.warn(
-                "DataFrame.into_partitions not supported on the NativeRunner. This will be a no-op. Please use the RayRunner via `daft.set_runner_ray()` instead if you need to repartition."
+                "DataFrame.into_partitions is not supported on the native runner and will be a no-op."
             )
 
         builder = self._builder.into_partitions(num)
@@ -5128,10 +5111,6 @@ class DataFrame:
             If you do not need random access, you may get better performance out of an IterableDataset,
             which streams data items in as soon as they are ready and does not block on full materialization.
 
-        Tip:
-            This method returns results locally.
-            For distributed training, you may want to use [DataFrame.to_ray_dataset()][daft.DataFrame.to_ray_dataset].
-
         Args:
             shard_strategy (Optional[Literal["file"]]): Strategy to use for sharding the dataset. Currently only "file" is supported.
             world_size (Optional[int]): Total number of workers for sharding. Required if shard_strategy is specified.
@@ -5150,9 +5129,6 @@ class DataFrame:
             >>> df = daft.from_pydict({"x": [1, 2, 3], "y": [4, 5, 6]})
             >>> torch_dataset = df.to_torch_map_dataset()  # doctest: +SKIP
 
-        Tip:
-            This method returns results locally.
-            For distributed training, you may want to use [DataFrame.to_ray_dataset()][daft.DataFrame.to_ray_dataset].
         """
         from daft.dataframe.to_torch import DaftTorchDataset
 
@@ -5201,9 +5177,6 @@ class DataFrame:
             Do keep in mind that Daft is already using multithreading or multiprocessing under the hood
             to compute the data stream that feeds this dataset.
 
-        Tip:
-            This method returns results locally.
-            For distributed training, you may want to use [DataFrame.to_ray_dataset()][daft.DataFrame.to_ray_dataset].
         """
         from daft.dataframe.to_torch import DaftTorchIterableDataset
 
@@ -5218,188 +5191,6 @@ class DataFrame:
             df = self
 
         return DaftTorchIterableDataset(df)
-
-    @DataframePublicAPI
-    def to_ray_dataset(self) -> "ray.data.dataset.DataSet":
-        """Converts the current DataFrame to a [Ray Dataset](https://docs.ray.io/en/latest/data/api/dataset.html#ray.data.Dataset) which is useful for running distributed ML model training in Ray.
-
-        Returns:
-            ray.data.dataset.DataSet: [Ray dataset](https://docs.ray.io/en/latest/data/api/dataset.html#ray.data.Dataset)
-
-        Examples:
-            >>> import daft
-            >>> df = daft.from_pydict({"x": [1, 2, 3], "y": [4, 5, 6]})
-            >>> ray_dataset = df.to_ray_dataset()  # doctest: +SKIP
-
-        Note:
-            This function requires Ray to be installed. It works with any Daft runner -
-            when using the native runner, partitions are converted to Arrow tables locally
-            and then handed to Ray.
-        """
-        from daft.runners.ray_runner import RayPartitionSet
-
-        self.collect()
-        partition_set = self._result
-        assert partition_set is not None
-        if isinstance(partition_set, RayPartitionSet):
-            return partition_set.to_ray_dataset()
-
-        # Native runner path: convert MicroPartitions to Arrow tables locally,
-        # then create a Ray Dataset from them.
-        import ray.data
-
-        from daft.runners.ray_runner import _micropartition_to_ray_dataset_block
-
-        blocks = [_micropartition_to_ray_dataset_block(result.micropartition()) for _, result in partition_set.items()]
-        # All partitions share the same schema, so either all convert to Arrow or all
-        # fall back to pylist. Handle both cases.
-        if blocks and isinstance(blocks[0], list):
-            all_items = [item for block in blocks for item in block]
-            return ray.data.from_items(all_items)
-        return ray.data.from_arrow(blocks)
-
-    @classmethod
-    def _from_ray_dataset(cls, ds: "ray.data.dataset.DataSet") -> "DataFrame":
-        """Creates a DataFrame from a [Ray Dataset](https://docs.ray.io/en/latest/data/api/dataset.html#ray.data.Dataset)."""
-        if get_or_create_runner().name != "ray":
-            raise ValueError("Daft needs to be running on the Ray Runner for this operation")
-
-        from daft.runners.ray_runner import RayRunnerIO
-
-        ray_runner_io = get_or_create_runner().runner_io()
-        assert isinstance(ray_runner_io, RayRunnerIO)
-
-        partition_set, schema = ray_runner_io.partition_set_from_ray_dataset(ds)
-        cache_entry = get_or_create_runner().put_partition_set_into_cache(partition_set)
-        size_bytes = partition_set.size_bytes()
-
-        num_rows = len(partition_set)
-        assert size_bytes is not None, "In-memory data should always have non-None size in bytes"
-        builder = LogicalPlanBuilder.from_in_memory_scan(
-            cache_entry,
-            schema=schema,
-            num_partitions=partition_set.num_partitions(),
-            size_bytes=size_bytes,
-            num_rows=num_rows,
-        )
-        df = cls(builder)
-        df._result_cache = cache_entry
-
-        # build preview
-        context = get_context()
-        num_preview_rows = context.daft_execution_config.num_preview_rows
-        dataframe_num_rows = len(df)
-        if dataframe_num_rows > num_preview_rows:
-            preview_results, _ = ray_runner_io.partition_set_from_ray_dataset(ds.limit(num_preview_rows))
-        else:
-            preview_results = partition_set
-
-        # set preview
-        preview_partition = preview_results._get_merged_micropartition(df.schema())
-        df._preview = Preview(
-            partition=preview_partition,
-            total_rows=dataframe_num_rows,
-        )
-        return df
-
-    @DataframePublicAPI
-    def to_dask_dataframe(
-        self,
-        meta: Union[
-            "pandas.DataFrame",
-            "pandas.Series[Any]",
-            dict[str, Any],
-            Iterable[Any],
-            tuple[Any],
-            None,
-        ] = None,
-    ) -> "dask.DataFrame":
-        """Converts the current Daft DataFrame to a Dask DataFrame.
-
-        The returned Dask DataFrame will use [Dask-on-Ray](https://docs.ray.io/en/latest/ray-more-libs/dask-on-ray.html)
-        to execute operations on a Ray cluster.
-
-        Args:
-            meta: An empty [pandas DataFrame](https://pandas.pydata.org/docs/reference/api/pandas.DataFrame.html)or [Series](https://pandas.pydata.org/pandas-docs/stable/reference/api/pandas.Series.html) that matches the dtypes and column
-                names of the stream. This metadata is necessary for many algorithms in
-                dask dataframe to work. For ease of use, some alternative inputs are
-                also available. Instead of a DataFrame, a dict of ``{name: dtype}`` or
-                iterable of ``(name, dtype)`` can be provided (note that the order of
-                the names should match the order of the columns). Instead of a series, a
-                tuple of ``(name, dtype)`` can be used.
-                By default, this will be inferred from the underlying Daft DataFrame schema,
-                with this argument supplying an optional override.
-
-        Returns:
-            dask.DataFrame: A Dask DataFrame stored on a Ray cluster.
-
-        Note:
-            This function can only work if Daft is running using the RayRunner.
-
-        Examples:
-            >>> import daft
-            >>> daft.set_runner_ray()  # doctest: +SKIP
-            >>> df = daft.from_pydict({"a": [1, 2, 3], "b": [4, 5, 6]})
-            >>> dask_df = df.to_dask_dataframe()  # doctest: +SKIP
-
-        """
-        from daft.runners.ray_runner import RayPartitionSet
-
-        self.collect()
-        partition_set = self._result
-        assert partition_set is not None
-        # TODO(Clark): Support Dask DataFrame conversion for the local runner if
-        # Dask is using a non-distributed scheduler.
-        if not isinstance(partition_set, RayPartitionSet):
-            raise ValueError("Cannot convert to Dask DataFrame if not running on Ray backend")
-        return partition_set.to_dask_dataframe(meta)
-
-    @classmethod
-    @DataframePublicAPI
-    def _from_dask_dataframe(cls, ddf: "dask.DataFrame") -> "DataFrame":
-        """Creates a Daft DataFrame from a Dask DataFrame."""
-        # TODO(Clark): Support Dask DataFrame conversion for the local runner if
-        # Dask is using a non-distributed scheduler.
-        if get_or_create_runner().name != "ray":
-            raise ValueError("Daft needs to be running on the Ray Runner for this operation")
-
-        from daft.runners.ray_runner import RayRunnerIO
-
-        ray_runner_io = get_or_create_runner().runner_io()
-        assert isinstance(ray_runner_io, RayRunnerIO)
-
-        partition_set, schema = ray_runner_io.partition_set_from_dask_dataframe(ddf)
-        cache_entry = get_or_create_runner().put_partition_set_into_cache(partition_set)
-        size_bytes = partition_set.size_bytes()
-        num_rows = len(partition_set)
-        assert size_bytes is not None, "In-memory data should always have non-None size in bytes"
-        builder = LogicalPlanBuilder.from_in_memory_scan(
-            cache_entry,
-            schema=schema,
-            num_partitions=partition_set.num_partitions(),
-            size_bytes=size_bytes,
-            num_rows=num_rows,
-        )
-
-        df = cls(builder)
-        df._result_cache = cache_entry
-
-        # build preview
-        context = get_context()
-        num_preview_rows = context.daft_execution_config.num_preview_rows
-        dataframe_num_rows = len(df)
-        if dataframe_num_rows > num_preview_rows:
-            preview_results, _ = ray_runner_io.partition_set_from_dask_dataframe(ddf.loc[: num_preview_rows - 1])
-        else:
-            preview_results = partition_set
-
-        # set preview
-        preview_partition = preview_results._get_merged_micropartition(df.schema())
-        df._preview = Preview(
-            partition=preview_partition,
-            total_rows=dataframe_num_rows,
-        )
-        return df
 
 
 @dataclass

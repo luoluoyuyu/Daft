@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import random
-from io import StringIO
 
 import pandas as pd
 import pytest
 
 import daft
 from daft import Window, col
-from tests.conftest import assert_df_equals, get_tests_daft_runner_name
+from tests.conftest import assert_df_equals
 
 
 def test_single_partition_sum(make_df):
@@ -689,107 +688,3 @@ def test_literal_agg_over_window(make_df):
 
     assert_df_equals(result.to_pandas(), expected, sort_key=["a", "i"])
 
-
-@pytest.mark.skipif(
-    get_tests_daft_runner_name() != "ray",
-    reason="Tests Flotilla-specific behavior with repartition",
-)
-def test_window_on_hash_partitioned_df_does_not_shuffle():
-    """Test that window functions don't shuffle when input is already hash partitioned by partition_by columns."""
-    df = daft.from_pydict({"category": ["A", "B", "C", "A", "B", "C"], "value": [1, 2, 3, 4, 5, 6]})
-    df = df.repartition(2, "category")
-
-    window = Window().partition_by("category")
-    df = df.select(
-        col("category"),
-        col("value"),
-        col("value").sum().over(window).alias("sum"),
-    )
-
-    plan_io = StringIO()
-    df.explain(True, file=plan_io)
-    captured = plan_io.getvalue()
-
-    # The logical plan should retain the user repartition, and the physical plan should
-    # execute it as a single Ray shuffle without adding an extra shuffle for the window.
-    assert captured.count("Repartition") == 2, (
-        f"Expected 'Repartition' to appear twice in logical plans, got {captured.count('Repartition')}\n{captured}"
-    )
-    assert captured.count("RayShuffle") == 1, (
-        f"Expected a single physical RayShuffle, got {captured.count('RayShuffle')}\n{captured}"
-    )
-
-
-@pytest.mark.skipif(
-    get_tests_daft_runner_name() != "ray",
-    reason="Tests Flotilla-specific behavior with repartition",
-)
-def test_window_on_hash_partitioned_df_multiple_columns_does_not_shuffle():
-    """Test window functions with multiple partition_by columns don't shuffle when already hash partitioned."""
-    df = daft.from_pydict(
-        {
-            "category": ["A", "B", "C", "A", "B", "C"],
-            "group": [1, 1, 2, 2, 1, 2],
-            "value": [10, 20, 30, 40, 50, 60],
-        }
-    )
-    df = df.repartition(2, col("category"), col("group"))
-
-    window = Window().partition_by(["category", "group"])
-    df = df.select(
-        col("category"),
-        col("group"),
-        col("value"),
-        col("value").sum().over(window).alias("sum"),
-    )
-
-    plan_io = StringIO()
-    df.explain(True, file=plan_io)
-    captured = plan_io.getvalue()
-
-    # The logical plan should retain the user repartition, and the physical plan should
-    # execute it as a single Ray shuffle without adding an extra shuffle for the window.
-    assert captured.count("Repartition") == 2, (
-        f"Expected 'Repartition' to appear twice in logical plans, got {captured.count('Repartition')}\n{captured}"
-    )
-    assert captured.count("RayShuffle") == 1, (
-        f"Expected a single physical RayShuffle, got {captured.count('RayShuffle')}\n{captured}"
-    )
-
-
-@pytest.mark.skipif(
-    get_tests_daft_runner_name() != "ray",
-    reason="Tests Flotilla-specific behavior with repartition",
-)
-def test_window_on_hash_partitioned_df_with_different_partition_does_shuffle():
-    """Test that window functions DO shuffle when hash partitioned by different columns."""
-    df = daft.from_pydict(
-        {
-            "category": ["A", "B", "C", "A", "B", "C"],
-            "group": [1, 1, 2, 2, 1, 2],
-            "value": [10, 20, 30, 40, 50, 60],
-        }
-    )
-    # Partition by "category" but window by "group"
-    df = df.repartition(2, "category")
-
-    window = Window().partition_by("group")
-    df = df.select(
-        col("category"),
-        col("group"),
-        col("value"),
-        col("value").sum().over(window).alias("sum"),
-    )
-
-    plan_io = StringIO()
-    df.explain(True, file=plan_io)
-    captured = plan_io.getvalue()
-
-    # The logical plans still show the original user repartition, but the physical plan
-    # should now contain two Ray shuffles: the original one plus an extra one for the window.
-    assert captured.count("Repartition") == 2, (
-        f"Expected 'Repartition' to appear twice in logical plans, got {captured.count('Repartition')}\n{captured}"
-    )
-    assert captured.count("RayShuffle") == 2, (
-        f"Expected two physical RayShuffles when the window requires an additional shuffle, got {captured.count('RayShuffle')}\n{captured}"
-    )

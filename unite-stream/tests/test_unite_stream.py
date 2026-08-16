@@ -93,7 +93,7 @@ df = UniteStream.from_pydict({"v": [1, 2]})
 OUTPUT_STREAMS.append(df.with_column("w", plus_one(UniteStream.col("v"))))
 """
     plans = UniteStreamParser().parse(script)
-    results = UniteStreamRuntime(distributed_mode=False).execute_plans(plans)
+    results = UniteStreamRuntime().execute_plans(plans)
     assert results[0].to_pydict() == {"v": [1, 2], "w": [2, 3]}
 
 
@@ -105,7 +105,7 @@ df = UniteStream.from_pydict({"x": [1.0, 4.0, 9.0]})
 OUTPUT_STREAMS.append(df.with_column("sqrt_x", UniteStream.col("x").apply(math.sqrt, return_dtype=UniteStream.DataType.float64())))
 """
     plans = UniteStreamParser().parse(script)
-    UniteStreamRuntime(distributed_mode=False).execute_plans(plans)
+    UniteStreamRuntime().execute_plans(plans)
 
 
 # --------------------------------------------------------------------------- #
@@ -143,7 +143,7 @@ clean = source.filter(UniteStream.col("age") >= 21).select("user_id", "age")
 OUTPUT_STREAMS.append(clean)
 """
         bundle = compiler.compile_to_plans(script, job_namespace="roundtrip")
-        UniteStreamRuntime(distributed_mode=False).execute_plans(bundle)
+        UniteStreamRuntime().execute_plans(bundle)
         out_dir = target / "roundtrip" / "stream_job_0.parquet"
         assert list(out_dir.glob("**/*.parquet"))
 
@@ -158,7 +158,7 @@ source = UniteStream.from_pydict({"n": [1, 2, 3]})
 OUTPUT_STREAMS.append(source.with_column("m", double_it(UniteStream.col("n"))))
 """
     plans = UniteStreamParser().parse(script)
-    results = UniteStreamRuntime(distributed_mode=False).execute_plans(plans)
+    results = UniteStreamRuntime().execute_plans(plans)
     assert results[0].to_pydict() == {"n": [1, 2, 3], "m": [2, 4, 6]}
 
 
@@ -224,24 +224,24 @@ OUTPUT_STREAMS.append(UniteStream.from_pydict({"x": [1]}))
 
 def test_output_streams_is_per_call_local_list() -> None:
     """Two consecutive compiles must each see their own fresh ``OUTPUT_STREAMS``."""
-    captured_ids: list[int] = []
+    captured_lists: list[object] = []
 
-    def remember_id(obj: object) -> None:
-        captured_ids.append(id(obj))
+    def remember_list(obj: object) -> None:
+        captured_lists.append(obj)
 
-    compiler = UniteStreamCompiler(
-        system_target_dir="/tmp/per_call_local",
-        extra_globals={"remember_id": remember_id},
-    )
     script = """
-remember_id(OUTPUT_STREAMS)
+remember_list(OUTPUT_STREAMS)
 OUTPUT_STREAMS.append(UniteStream.from_pydict({"x": [1]}))
 """
+    compiler = UniteStreamCompiler(
+        system_target_dir="/tmp/per_call_local",
+        extra_globals={"remember_list": remember_list},
+    )
     compiler.compile_to_plans(script, job_namespace="call_a")
     compiler.compile_to_plans(script, job_namespace="call_b")
 
-    assert len(captured_ids) == 2
-    assert captured_ids[0] != captured_ids[1], (
+    assert len(captured_lists) == 2
+    assert captured_lists[0] is not captured_lists[1], (
         "OUTPUT_STREAMS must be a fresh list per compile call"
     )
 
@@ -271,7 +271,6 @@ def test_namespace_does_not_expose_runtime_or_plan_transport() -> None:
         "execute_plan",
         "execute_from_bytes",
         "set_runner_native",
-        "set_runner_ray",
         "get_or_create_runner",
         "get_or_infer_runner_type",
         "write_table",
@@ -280,7 +279,7 @@ def test_namespace_does_not_expose_runtime_or_plan_transport() -> None:
 
 
 def test_runner_enum_round_trip() -> None:
-    rt = UniteStreamRuntime(distributed_mode=False)
+    rt = UniteStreamRuntime()
     assert rt.runner is RunnerType.NATIVE
 
     rt2 = UniteStreamRuntime(runner=RunnerType.NATIVE, configure_runner=False)
@@ -379,7 +378,7 @@ def test_module_level_parse_shortcut() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Physical-plan IR (symmetric carrier across native + Ray)                    #
+# Physical-plan IR (native carrier)                                          #
 # --------------------------------------------------------------------------- #
 
 
@@ -400,7 +399,7 @@ def test_compile_to_ir_emits_local_physical_plan_for_native_runner() -> None:
         env = envelopes[0]
         assert isinstance(env, PhysicalPlanEnvelope)
         assert env.kind is PlanKind.LOCAL
-        assert env.is_local() and not env.is_distributed()
+        assert env.is_local()
         assert env.stream_index == 0
         assert env.job_namespace == "ir_local_job"
         # The wrapped plan is the actual native physical plan
@@ -408,25 +407,6 @@ def test_compile_to_ir_emits_local_physical_plan_for_native_runner() -> None:
         # Pickle round-trip preserves the plan as the same Daft type
         roundtripped = cloudpickle.loads(cloudpickle.dumps(env))
         assert type(roundtripped.plan).__name__ == "LocalPhysicalPlan"
-
-
-def test_compile_to_ir_emits_distributed_physical_plan_for_ray_runner() -> None:
-    """Ray compile path lowers each plan to a ``DistributedPhysicalPlan``."""
-    with tempfile.TemporaryDirectory() as tmp:
-        compiler = UniteStreamCompiler(system_target_dir=str(Path(tmp) / "ir_ray"))
-        ir_bytes = compiler.compile_to_ir(
-            _SAMPLE_SCRIPT,
-            runner=RunnerType.RAY,
-            job_namespace="ir_ray_job",
-        )
-        envelopes = cloudpickle.loads(ir_bytes)
-        env = envelopes[0]
-        assert env.kind is PlanKind.DISTRIBUTED
-        assert env.is_distributed() and not env.is_local()
-        assert type(env.plan).__name__ == "DistributedPhysicalPlan"
-        # Pickle round-trip
-        roundtripped = cloudpickle.loads(cloudpickle.dumps(env))
-        assert type(roundtripped.plan).__name__ == "DistributedPhysicalPlan"
 
 
 def test_compile_to_ir_default_runner_matches_global_daft_config() -> None:
@@ -553,7 +533,7 @@ def test_runtime_execute_plans_accepts_compiled_plans_and_raw_list() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         target = Path(tmp) / "carrier"
         compiler = UniteStreamCompiler(system_target_dir=str(target))
-        runtime = UniteStreamRuntime(distributed_mode=False)
+        runtime = UniteStreamRuntime()
 
         # Bound CompiledPlans → write metadata
         bundle = compiler.compile_to_plans(_SAMPLE_SCRIPT, job_namespace="from_bundle")

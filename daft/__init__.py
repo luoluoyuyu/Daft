@@ -73,11 +73,9 @@ from daft.context import (
 )
 from daft.convert import (
     from_arrow,
-    from_dask_dataframe,
     from_pandas,
     from_pydict,
     from_pylist,
-    from_ray_dataset,
 )
 from daft.daft import ImageFormat, ImageMode, ImageProperty, ResourceRequest
 from daft.dataframe import DataFrame
@@ -149,7 +147,7 @@ from daft.io import (
     read_huggingface,
     read_mcap,
 )
-from daft.runners import get_or_create_runner, get_or_infer_runner_type, set_runner_native, set_runner_ray
+from daft.runners import get_or_create_runner, get_or_infer_runner_type, set_runner_native
 from daft.runtime import Job, RuntimeClient, connect
 from daft.sql import sql, sql_expr
 from daft.viz import register_viz_hook
@@ -227,13 +225,11 @@ __all__ = [
     "element",
     "execution_config_ctx",
     "from_arrow",
-    "from_dask_dataframe",
     "from_files",
     "from_glob_path",
     "from_pandas",
     "from_pydict",
     "from_pylist",
-    "from_ray_dataset",
     "func",
     "functions",
     "get_catalog",
@@ -284,7 +280,6 @@ __all__ = [
     "set_planning_config",
     "set_provider",
     "set_runner_native",
-    "set_runner_ray",
     "set_session",
     "sql",
     "sql_expr",

@@ -4,12 +4,10 @@ Use :class:`UniteStreamClient` when you want the simplest possible API. It
 composes the lower-level stages internally and exposes two clean execution
 paths so you can pick the right one for your deployment:
 
-* **IR** (default for ``submit``) — :meth:`compile` lowers each plan into
-  either ``LocalPhysicalPlan`` (native runner) or ``DistributedPhysicalPlan``
-  (Ray runner), wraps it in a :class:`PhysicalPlanEnvelope`, and cloudpickles
-  the list. :meth:`execute` dispatches each envelope to ``NativeExecutor``
-  or ``DistributedPhysicalPlanRunner`` based on its ``kind``. This is the
-  symmetric, transportable pipeline.
+* **IR** (default for ``submit``) — :meth:`compile` lowers each plan into a
+  ``LocalPhysicalPlan``, wraps it in a :class:`PhysicalPlanEnvelope`, and
+  cloudpickles the list. :meth:`execute` drives each envelope through
+  ``NativeExecutor``. This is the transportable pipeline.
 
 * **In-process plans** — :meth:`compile_to_plans` keeps the lazy
   ``daft.DataFrame`` plans on the same process; :meth:`execute_plans`
@@ -40,9 +38,7 @@ class UniteStreamClient:
 
     Args:
         system_target_dir: Root directory for ``stream_job_<i>.parquet`` outputs.
-        distributed_mode: ``True`` selects the Ray runner, ``False`` native.
-        runner: Explicit runner override (takes precedence over
-            ``distributed_mode``).
+        runner: Daft runner to use; only ``RunnerType.NATIVE`` is supported.
         configure_runner: Whether to set the global Daft runner on init.
         extra_globals: Optional static names to inject into every script run.
     """
@@ -53,8 +49,7 @@ class UniteStreamClient:
         self,
         system_target_dir: str,
         *,
-        distributed_mode: bool = False,
-        runner: RunnerType | None = None,
+        runner: RunnerType = RunnerType.NATIVE,
         configure_runner: bool = True,
         extra_globals: Mapping[str, Any] | None = None,
     ) -> None:
@@ -62,7 +57,6 @@ class UniteStreamClient:
             system_target_dir, extra_globals=extra_globals
         )
         self._runtime: Final[UniteStreamRuntime] = UniteStreamRuntime(
-            distributed_mode=distributed_mode,
             runner=runner,
             configure_runner=configure_runner,
         )
@@ -104,8 +98,8 @@ class UniteStreamClient:
         """Parse + bind ``write_parquet`` paths; return a :class:`CompiledPlans`.
 
         Hand the returned bundle to :meth:`execute_plans` (or iterate it and
-        call ``.collect()`` on each plan directly) to run on the configured
-        Daft runner (native or Ray).
+        call ``.collect()`` on each plan directly) to run on the native
+        Daft runner.
         """
         return self._compiler.compile_to_plans(
             user_python_code, job_namespace=job_namespace
@@ -120,10 +114,8 @@ class UniteStreamClient:
     ) -> bytes:
         """Parse + bind + lower to physical plans + cloudpickle.
 
-        Symmetric for both runners: emits ``LocalPhysicalPlan`` envelopes
-        when ``runner`` resolves to native, or ``DistributedPhysicalPlan``
-        envelopes for Ray. ``runner=None`` (default) uses *this client's*
-        runtime runner.
+        Emits ``LocalPhysicalPlan`` envelopes for the native runner.
+        ``runner=None`` (default) uses *this client's* runtime runner.
         """
         return self._compiler.compile_to_ir(
             user_python_code,
@@ -167,20 +159,18 @@ class UniteStreamClient:
 
         * **IR path**: :meth:`compile` → cloudpickled
           ``list[PhysicalPlanEnvelope]`` → :meth:`UniteStreamRuntime.execute_ir`.
-          The compiler picks ``LocalPhysicalPlan`` or
-          ``DistributedPhysicalPlan`` based on this client's runner. Returns
+          The compiler always emits ``LocalPhysicalPlan`` envelopes. Returns
           a ``list[ExecutionResult]``.
 
         * **In-process plans path**: :meth:`compile_to_plans` → lazy
           ``daft.DataFrame`` plans → :meth:`execute_plans`. Returns the
           materialized ``list[daft.DataFrame]``.
 
-        ``use_ir=None`` (default) routes through the IR pipeline for both
-        runners — both ``LocalPhysicalPlan`` and ``DistributedPhysicalPlan``
-        envelopes are cloudpickle-safe and executable end-to-end. Pass
-        ``use_ir=False`` to skip serialization and drive the lazy
-        ``daft.DataFrame`` plans directly (useful for in-process debugging
-        or to bypass ``cloudpickle`` overhead).
+        ``use_ir=None`` (default) routes through the IR pipeline — the
+        ``LocalPhysicalPlan`` envelope is cloudpickle-safe and executable
+        end-to-end. Pass ``use_ir=False`` to skip serialization and drive
+        the lazy ``daft.DataFrame`` plans directly (useful for in-process
+        debugging or to bypass ``cloudpickle`` overhead).
 
         Args:
             user_python_code: User script source.

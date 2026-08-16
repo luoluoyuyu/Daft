@@ -8,7 +8,6 @@ import uuid
 import boto3
 
 import daft
-from tests.conftest import get_tests_daft_runner_name
 
 
 def test_s3_credentials_refresh(aws_server, aws_server_ip, aws_server_port, aws_credentials):
@@ -92,10 +91,7 @@ def test_s3_credentials_refresh(aws_server, aws_server_ip, aws_server_port, aws_
     time.sleep(2)
     df.write_parquet(output_file_path, io_config=dynamic_config)
 
-    is_ray_runner = (
-        get_tests_daft_runner_name() == "ray"
-    )  # hack because ray runner will not increment `count_get_credentials`
-    assert count_get_credentials > pre_count or is_ray_runner
+    assert count_get_credentials > pre_count
 
     df2 = daft.read_parquet(output_file_path, io_config=static_config)
     assert df.to_arrow() == df2.to_arrow()

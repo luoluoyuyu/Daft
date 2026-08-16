@@ -1,23 +1,12 @@
 from __future__ import annotations
 
-import tempfile
-from contextlib import contextmanager
-
 import pyarrow as pa
 import pytest
 
 import daft
 from daft import col
 from daft.datatype import DataType
-from tests.conftest import get_tests_daft_runner_name
 from tests.utils import sort_arrow_table
-
-
-@contextmanager
-def flight_shuffle_ctx():
-    with tempfile.TemporaryDirectory() as temp_dir:
-        with daft.execution_config_ctx(shuffle_algorithm="flight_shuffle", flight_shuffle_dirs=[temp_dir]) as ctx:
-            yield ctx
 
 
 def get_n_partitions():
@@ -30,26 +19,17 @@ def get_join_params():
 
     This avoids generating test cases that would be skipped at runtime,
     which saves significant fixture setup time (especially for parquet I/O).
-    """
-    runner = get_tests_daft_runner_name()
 
-    strategies = [None, "hash", "sort_merge", "broadcast"]
+    Only ``None`` and ``hash`` are exercised: the native runner does not
+    support ``sort_merge`` / ``broadcast`` and silently falls back to a
+    hash join (``test_invalid_join_strategies`` still validates the
+    planner rejects non-inner sort-merge and outer broadcast joins).
+    """
+    strategies = [None, "hash"]
     join_types = ["inner", "left", "right", "outer"]
 
     for strategy in strategies:
         for join_type in join_types:
-            # Native runner only supports None and hash strategies
-            if runner == "native" and strategy not in [None, "hash"]:
-                continue
-
-            # Sort-merge only supports inner joins (for now)
-            if strategy == "sort_merge" and join_type != "inner":
-                continue
-
-            # Broadcast doesn't support outer joins
-            if strategy == "broadcast" and join_type == "outer":
-                continue
-
             yield pytest.param(strategy, join_type, id=f"{strategy or 'default'}-{join_type}")
 
 
@@ -59,20 +39,6 @@ def is_valid_join_strategy_combination(join_strategy, join_type):
     Used by tests that have complex parametrization where join_type is
     combined with other parameters (e.g., expected results).
     """
-    runner = get_tests_daft_runner_name()
-
-    # Native runner only supports None and hash strategies
-    if runner == "native" and join_strategy not in [None, "hash"]:
-        return False
-
-    # Sort-merge only supports inner joins (for now)
-    if join_strategy == "sort_merge" and join_type != "inner":
-        return False
-
-    # Broadcast doesn't support outer joins
-    if join_strategy == "broadcast" and join_type == "outer":
-        return False
-
     return True
 
 
@@ -137,9 +103,7 @@ def test_joins(join_strategy, join_type, make_df, n_partitions, with_default_mor
 
     print(f"join_strategy: {join_strategy}, join_type: {join_type}")
     joined = df.join(df, on="A", strategy=join_strategy, how=join_type)
-    # We shouldn't need to sort the joined output if using a sort-merge join.
-    if join_strategy != "sort_merge":
-        joined = joined.sort("A")
+    joined = joined.sort("A")
     joined_data = joined.to_pydict()
 
     assert joined_data == {
@@ -166,9 +130,7 @@ def test_multicol_joins(join_strategy, join_type, make_df, n_partitions: int, wi
     )
 
     joined = df.join(df, on=["A", "B"], strategy=join_strategy, how=join_type)
-    # We shouldn't need to sort the joined output if using a sort-merge join.
-    if join_strategy != "sort_merge":
-        joined = joined.sort("A")
+    joined = joined.sort("A")
     joined_data = joined.to_pydict()
 
     assert joined_data == {
@@ -262,7 +224,7 @@ def test_joins_all_same_key(join_strategy, join_type, make_df, n_partitions: int
 @pytest.mark.parametrize("n_partitions", get_n_partitions())
 @pytest.mark.parametrize(
     "join_strategy",
-    [None, "hash", "sort_merge", "broadcast"],
+    [None, "hash"],
 )
 @pytest.mark.parametrize(
     "join_type,flip,expected",
@@ -345,7 +307,7 @@ def test_joins_no_overlap_disjoint(
 @pytest.mark.parametrize("n_partitions", get_n_partitions())
 @pytest.mark.parametrize(
     "join_strategy",
-    [None, "hash", "sort_merge", "broadcast"],
+    [None, "hash"],
 )
 @pytest.mark.parametrize(
     "join_type,flip,expected",
@@ -419,9 +381,7 @@ def test_joins_no_overlap_interleaved(
         joined = df2.join(df1, on="A", strategy=join_strategy, how=join_type)
     else:
         joined = df1.join(df2, on="A", strategy=join_strategy, how=join_type)
-    # We shouldn't need to sort the joined output if using a sort-merge join.
-    if join_strategy != "sort_merge":
-        joined = joined.sort("A")
+    joined = joined.sort("A")
     joined_data = joined.to_pydict()
 
     assert joined_data == expected
@@ -461,7 +421,7 @@ def test_limit_after_join(join_strategy, join_type, make_df, n_partitions: int, 
 @pytest.mark.parametrize("repartition_nparts", get_n_partitions())
 @pytest.mark.parametrize(
     "join_strategy",
-    [None, "hash", "sort_merge", "broadcast"],
+    [None, "hash"],
 )
 @pytest.mark.parametrize(
     "join_type,expected",
@@ -524,7 +484,7 @@ def test_join_with_null(join_strategy, join_type, expected, make_df, repartition
 @pytest.mark.parametrize("repartition_nparts", get_n_partitions())
 @pytest.mark.parametrize(
     "join_strategy",
-    [None, "hash", "sort_merge", "broadcast"],
+    [None, "hash"],
 )
 @pytest.mark.parametrize(
     "join_type,expected",
@@ -596,7 +556,7 @@ def test_join_with_null_multikey(
 @pytest.mark.parametrize("repartition_nparts", get_n_partitions())
 @pytest.mark.parametrize(
     "join_strategy",
-    [None, "hash", "sort_merge", "broadcast"],
+    [None, "hash"],
 )
 @pytest.mark.parametrize(
     "join_type,expected",
@@ -685,7 +645,7 @@ def test_join_with_null_asymmetric_multikey(
 @pytest.mark.parametrize("repartition_nparts", get_n_partitions())
 @pytest.mark.parametrize(
     "join_strategy",
-    [None, "hash", "sort_merge", "broadcast"],
+    [None, "hash"],
 )
 @pytest.mark.parametrize(
     "join_type,expected",
@@ -755,7 +715,7 @@ def test_join_all_null(join_strategy, join_type, expected, make_df, repartition_
 
 @pytest.mark.parametrize(
     "join_strategy",
-    [None, "hash", "sort_merge", "broadcast"],
+    [None, "hash"],
 )
 @pytest.mark.parametrize(
     "join_type,expected",
@@ -799,7 +759,7 @@ def test_join_null_type_column(join_strategy, join_type, expected, make_df, with
 @pytest.mark.parametrize("repartition_nparts", get_n_partitions())
 @pytest.mark.parametrize(
     "join_strategy",
-    [None, "hash", "sort_merge", "broadcast"],
+    [None, "hash"],
 )
 @pytest.mark.parametrize(
     "join_type,expected",
@@ -852,7 +812,7 @@ def test_join_semi_anti(join_strategy, join_type, expected, make_df, repartition
 @pytest.mark.parametrize("repartition_nparts", get_n_partitions())
 @pytest.mark.parametrize(
     "join_strategy",
-    [None, "hash", "sort_merge", "broadcast"],
+    [None, "hash"],
 )
 @pytest.mark.parametrize(
     "join_type,expected",
@@ -1056,7 +1016,7 @@ def test_join_true_join_keys(join_type, expected_dtypes, make_df, with_default_m
 
 @pytest.mark.parametrize(
     "join_strategy",
-    [None, "hash", "sort_merge", "broadcast"],
+    [None, "hash"],
 )
 @pytest.mark.parametrize(
     "join_type,expected",
@@ -1127,7 +1087,7 @@ def test_join_with_alias_in_key(join_strategy, join_type, expected, make_df, wit
 
 @pytest.mark.parametrize(
     "join_strategy",
-    [None, "hash", "sort_merge", "broadcast"],
+    [None, "hash"],
 )
 @pytest.mark.parametrize(
     "join_type,expected",
@@ -1198,7 +1158,7 @@ def test_join_same_name_alias(join_strategy, join_type, expected, make_df, with_
 
 @pytest.mark.parametrize(
     "join_strategy",
-    [None, "hash", "sort_merge", "broadcast"],
+    [None, "hash"],
 )
 @pytest.mark.parametrize(
     "join_type,expected",
@@ -1281,58 +1241,6 @@ def test_sort_merge_join_small_partitions(make_df, with_default_morsel_size):
     assert pd["k"] == [2, 3]
     assert pd["lv"] == [20, 30]
     assert pd["rv"] == [200, 300]
-
-
-@pytest.mark.skipif(
-    get_tests_daft_runner_name() != "ray",
-    reason="distributed sort-merge join backend routing is only relevant on the ray runner",
-)
-def test_sort_merge_join_uses_ray_shuffle_path_under_flight_shuffle_config(make_df, with_default_morsel_size):
-    with flight_shuffle_ctx():
-        left = make_df({"k": [1, 2, 3], "lv": [10, 20, 30]}, repartition=3, repartition_columns=["k"])
-        right = make_df({"k": [2, 3], "rv": [200, 300]}, repartition=2, repartition_columns=["k"])
-
-        out = left.join(right, on=["k"], how="inner", strategy="sort_merge").sort("k")
-        pd = out.to_pydict()
-
-    assert pd["k"] == [2, 3]
-    assert pd["lv"] == [20, 30]
-    assert pd["rv"] == [200, 300]
-
-
-@pytest.mark.parametrize("left_partitions,right_partitions", [(2, 2), (4, 3), (8, 4)])
-def test_sort_merge_join_different_left_right_keys(
-    left_partitions, right_partitions, make_df, with_default_morsel_size
-):
-    if get_tests_daft_runner_name() == "native":
-        pytest.skip("Sort-merge joins are not supported on native runner")
-
-    left = make_df(
-        {"left_k": [1, 2, 3], "lv": [10, 20, 30]},
-        repartition=left_partitions,
-        repartition_columns=["left_k"],
-    )
-    right = make_df(
-        {"right_k": [2, 3, 4], "rv": [200, 300, 400]},
-        repartition=right_partitions,
-        repartition_columns=["right_k"],
-    )
-
-    out = left.join(
-        right,
-        left_on="left_k",
-        right_on="right_k",
-        how="inner",
-        strategy="sort_merge",
-    ).sort("left_k")
-
-    pd = out.to_pydict()
-    assert pd == {
-        "left_k": [2, 3],
-        "lv": [20, 30],
-        "right_k": [2, 3],
-        "rv": [200, 300],
-    }
 
 
 @pytest.mark.parametrize(

@@ -8,7 +8,6 @@ import pytest
 
 import daft
 from daft import DataFrame
-from tests.conftest import get_tests_daft_runner_name
 
 
 @pytest.fixture(scope="module", params=[(1, 64), (8, 8), (64, 1)], ids=["1x64mib", "8x8mib", "64x1mib"])
@@ -37,7 +36,6 @@ def gen_simple_csvs(request) -> str:
         yield tmpdirname, num_files * mibs_per_file * 1024 * 128
 
 
-@pytest.mark.skipif(get_tests_daft_runner_name() != "native", reason="requires local runner")
 @pytest.mark.benchmark(group="file_read")
 def test_csv_read(gen_simple_csvs, benchmark):
     csv_dir, num_rows = gen_simple_csvs

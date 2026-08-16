@@ -52,8 +52,6 @@ FORBIDDEN = sorted(
         "to_pylist",
         "to_torch_map_dataset",
         "to_torch_iter_dataset",
-        "to_ray_dataset",
-        "to_dask_dataframe",
         "to_arrow_iter",
         "iter_rows",
         "iter_partitions",
@@ -148,7 +146,7 @@ GDF_METHODS = sorted(
 # Each entry below mirrors a name in ``daft.__all__`` (or one of its modules).
 # Names intentionally NOT mirrored (Parser/Runtime separation boundaries):
 #   serialize_plan, deserialize_plan, execute_plan, execute_from_bytes,
-#   set_runner_native, set_runner_ray, get_or_create_runner,
+#   set_runner_native, get_or_create_runner,
 #   get_or_infer_runner_type, write_table  (Session-level materialization)
 
 # Functions that take args and return a DataFrame (need ``wrap_result``).
@@ -177,8 +175,6 @@ DF_RETURNING_FUNCS = sorted(
         "from_pylist",
         "from_arrow",
         "from_pandas",
-        "from_ray_dataset",
-        "from_dask_dataframe",
         # session-level reader
         "read_table",
         # range generator

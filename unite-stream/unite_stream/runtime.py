@@ -1,7 +1,7 @@
 """Runtime stage of UniteStream.
 
 The runtime materializes a payload produced by :class:`UniteStreamCompiler`.
-Two **symmetric** entry points cover both Daft runners:
+Two entry points cover the native Daft runner:
 
 +----------------------+---------------------------------------------------+
 | Method               | Input  →  Output                                  |
@@ -10,10 +10,8 @@ Two **symmetric** entry points cover both Daft runners:
 |                      | ``list[PhysicalPlanEnvelope]``)                   |
 |                      |  →  ``list[ExecutionResult]``                     |
 |                      |                                                   |
-|                      | Dispatches per-envelope based on ``PlanKind``:    |
-|                      |  * ``LOCAL``  → :class:`daft.daft.NativeExecutor` |
-|                      |  * ``DISTRIBUTED`` →                              |
-|                      |    :class:`DistributedPhysicalPlanRunner`         |
+|                      | Every envelope is ``PlanKind.LOCAL`` and is run  |
+|                      | via :class:`daft.daft.NativeExecutor`.           |
 +----------------------+---------------------------------------------------+
 | ``execute_plans``    | :class:`CompiledPlans` or                         |
 |                      | ``list[daft.DataFrame]``                          |
@@ -25,8 +23,8 @@ Two **symmetric** entry points cover both Daft runners:
 
 Runner configuration
 --------------------
-``daft.set_runner_native`` / ``daft.set_runner_ray`` are *process-global* and
-Daft refuses to switch the runner once locked. The runtime probes
+``daft.set_runner_native`` is *process-global* and Daft refuses to switch
+the runner once locked. The runtime probes
 ``daft.get_or_infer_runner_type`` first and only sets the runner when
 needed; failures are downgraded to a debug log so multiple
 ``UniteStreamRuntime`` instances can coexist in the same process.
@@ -34,14 +32,11 @@ needed; failures are downgraded to a debug log so multiple
 Thread safety
 -------------
 ``execute_plans`` and ``execute_ir`` do not mutate instance state, so a
-single :class:`UniteStreamRuntime` may be shared across threads. The global
-Daft runner is process-wide, however — do not flip ``distributed_mode``
-from multiple threads on the same process.
+single :class:`UniteStreamRuntime` may be shared across threads.
 """
 
 from __future__ import annotations
 
-import asyncio
 import enum
 import logging
 from typing import Any, Final
@@ -61,18 +56,14 @@ class RunnerType(str, enum.Enum):
     """Available Daft runner backends."""
 
     NATIVE = "native"
-    RAY = "ray"
 
 
 class UniteStreamRuntime:
     """Execute UniteStream IR payloads or raw Daft plans.
 
     Args:
-        distributed_mode: Convenience boolean — ``True`` selects the Ray
-            runner, ``False`` the native runner. Ignored when ``runner`` is
-            given.
-        runner: Explicit override for ``distributed_mode``. If supplied,
-            takes precedence.
+        runner: Daft runner to configure. Only ``RunnerType.NATIVE`` is
+            supported by the current runtime.
         configure_runner: If ``True`` (default) the global Daft runner is set
             on construction. Set ``False`` to leave the current runner
             untouched.
@@ -82,16 +73,14 @@ class UniteStreamRuntime:
 
     def __init__(
         self,
-        distributed_mode: bool = False,
         *,
-        runner: RunnerType | None = None,
+        runner: RunnerType = RunnerType.NATIVE,
         configure_runner: bool = True,
     ) -> None:
-        resolved = runner or (RunnerType.RAY if distributed_mode else RunnerType.NATIVE)
-        self._runner: Final[RunnerType] = resolved
+        self._runner: Final[RunnerType] = runner
 
         if configure_runner:
-            self._configure_global_runner(resolved)
+            self._configure_global_runner(runner)
 
     # ------------------------------------------------------------------ #
     # Runner configuration                                               #
@@ -109,10 +98,7 @@ class UniteStreamRuntime:
             return
 
         try:
-            if target is RunnerType.RAY:
-                daft.set_runner_ray()
-            else:
-                daft.set_runner_native()
+            daft.set_runner_native()
         except Exception as exc:  # noqa: BLE001
             logger.debug(
                 "[Runtime] set_runner_%s skipped: %s", target.value, exc
@@ -122,12 +108,8 @@ class UniteStreamRuntime:
     def runner(self) -> RunnerType:
         return self._runner
 
-    @property
-    def is_distributed(self) -> bool:
-        return self._runner is RunnerType.RAY
-
     # ------------------------------------------------------------------ #
-    # IR-driven execution (symmetric: native + Ray)                      #
+    # IR-driven execution                                                #
     # ------------------------------------------------------------------ #
 
     def execute_ir(self, ir_bytes: bytes) -> list[ExecutionResult]:
@@ -138,9 +120,7 @@ class UniteStreamRuntime:
         :meth:`UniteStreamCompiler.compile_to_ir`. Each envelope is
         dispatched to the executor that matches its ``kind``:
 
-        * ``PlanKind.LOCAL``        → ``daft.daft.NativeExecutor``
-        * ``PlanKind.DISTRIBUTED``  → ``DistributedPhysicalPlanRunner``
-          (Ray must be available).
+        * ``PlanKind.LOCAL`` → ``daft.daft.NativeExecutor``
 
         Args:
             ir_bytes: A cloudpickled list of :class:`PhysicalPlanEnvelope`.
@@ -174,14 +154,11 @@ class UniteStreamRuntime:
                     f"{type(envelope).__name__}"
                 )
 
-            if envelope.kind is PlanKind.LOCAL:
-                results.append(self._execute_local_envelope(envelope))
-            elif envelope.kind is PlanKind.DISTRIBUTED:
-                results.append(self._execute_distributed_envelope(envelope))
-            else:  # pragma: no cover — exhaustive enum
+            if envelope.kind is not PlanKind.LOCAL:
                 raise RuntimeExecutionError(
                     f"[Runtime] envelopes[{index}] 未知 PlanKind: {envelope.kind!r}"
                 )
+            results.append(self._execute_local_envelope(envelope))
 
         return results
 
@@ -195,9 +172,8 @@ class UniteStreamRuntime:
         """Materialize a list / bundle of lazy plans via ``.collect()``.
 
         Accepts either a :class:`CompiledPlans` bundle (preferred) or a raw
-        ``list[daft.DataFrame]``. ``DataFrame.collect`` is dispatched by Daft
-        according to the currently configured runner, so this path works for
-        both **native** and **Ray** modes.
+        ``list[daft.DataFrame]``. ``DataFrame.collect`` is dispatched by
+        Daft's native runner.
 
         Raises:
             RuntimeExecutionError: If any element is not a DataFrame or
@@ -369,64 +345,6 @@ class UniteStreamRuntime:
         return ExecutionResult(
             stream_index=envelope.stream_index,
             kind=PlanKind.LOCAL,
-            output_path=envelope.output_path,
-            stats=stats,
-            num_partitions=num_partitions,
-        )
-
-    def _execute_distributed_envelope(
-        self, envelope: PhysicalPlanEnvelope
-    ) -> ExecutionResult:
-        """Drive a ``DistributedPhysicalPlan`` envelope via the Ray runner."""
-        if self._runner is not RunnerType.RAY:
-            raise RuntimeExecutionError(
-                f"[Runtime] envelope[{envelope.stream_index}] kind=DISTRIBUTED "
-                f"需要 Ray 模式（distributed_mode=True / runner=RunnerType.RAY），"
-                f"当前 runner={self._runner.value}"
-            )
-
-        try:
-            from daft.daft import DistributedPhysicalPlanRunner
-        except ImportError as exc:
-            raise RuntimeExecutionError(
-                "[Runtime] 当前 Daft 未暴露 DistributedPhysicalPlanRunner"
-            ) from exc
-
-        runner = DistributedPhysicalPlanRunner()
-        num_partitions = 0
-        stats: Any | None = None
-
-        async def _drain(plan: Any) -> tuple[int, Any]:
-            count = 0
-            local_stats: Any | None = None
-            stream = runner.run_plan(plan, {})
-            try:
-                async for _partition_ref in stream:
-                    count += 1
-            finally:
-                try:
-                    local_stats = stream.finish()
-                except Exception:  # noqa: BLE001 — stats are best-effort
-                    local_stats = None
-            return count, local_stats
-
-        try:
-            num_partitions, stats = asyncio.run(_drain(envelope.plan))
-        except Exception as exc:  # noqa: BLE001
-            raise RuntimeExecutionError(
-                f"[Runtime] 执行 distributed stream_job_{envelope.stream_index} 失败: "
-                f"{type(exc).__name__}: {exc}"
-            ) from exc
-
-        logger.debug(
-            "stream_job_%d (distributed) finished, partitions=%d, namespace=%s",
-            envelope.stream_index,
-            num_partitions,
-            envelope.job_namespace,
-        )
-        return ExecutionResult(
-            stream_index=envelope.stream_index,
-            kind=PlanKind.DISTRIBUTED,
             output_path=envelope.output_path,
             stats=stats,
             num_partitions=num_partitions,
