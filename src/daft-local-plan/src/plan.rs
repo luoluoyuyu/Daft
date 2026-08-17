@@ -2141,6 +2141,9 @@ pub enum RepartitionWriteBackend {
         shuffle_id: u64,
         shuffle_dirs: Vec<String>,
         compression: Option<String>,
+        /// Optional object-store URI (e.g. "s3://bucket/prefix") where this
+        /// shuffle's partition files are spilled. Empty = executor-local disk.
+        storage_uri: String,
     },
 }
 
@@ -2150,6 +2153,16 @@ pub enum ShuffleReadBackend {
     Flight {
         shuffle_id: u64,
         server_cache_mapping: HashMap<String, Vec<u32>>,
+        /// Partitions this task reads (AQE coalesce / broadcast). Empty =
+        /// exactly ``partition_idx`` from the input.
+        coalesce_partitions: Vec<u64>,
+        /// Protobuf value of ``ShuffleReadTransport`` chosen for this node.
+        read_transport: i32,
+        /// True when the scheduler marked this shuffle for broadcast read.
+        broadcast: bool,
+        fetch_retries: u64,
+        max_bytes_in_flight: u64,
+        max_concurrency_per_address: u64,
     },
 }
 

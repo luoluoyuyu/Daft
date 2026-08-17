@@ -57,6 +57,12 @@ message JobSubmitRequest {
   // server verifies it against the version reported by the worker's
   // handshake and fails the job on mismatch.
   string python_version = 6;
+
+  // Distributed shuffle execution configuration (transport choice, spill
+  // location, backpressure knobs, coalescing). When unset, the server uses
+  // its defaults: file+flight read transport, executor-local spill, and
+  // stats-driven coalescing enabled.
+  ShuffleConfig shuffle = 7;
 }
 
 // Response to POST /v1/jobs. The job runs asynchronously; poll
@@ -90,6 +96,59 @@ message SqlSubmitRequest {
   // In-memory partition sets keyed by the partition-set cache key of the
   // submitting process (same framing as ``JobSubmitRequest.partition_sets``).
   map<string, bytes> partition_sets = 3;
+
+  // Same distributed shuffle configuration as ``JobSubmitRequest.shuffle``.
+  ShuffleConfig shuffle = 4;
+}
+
+// How shuffle partitions are read back on the reduce side.
+enum ShuffleReadTransport {
+  SHUFFLE_READ_TRANSPORT_UNSPECIFIED = 0;
+  // Read partitions whose files are directly reachable on this executor
+  // (local disk, shared filesystem, or the job's object-store spill URI) and
+  // fetch everything else over Arrow Flight. This is the default: it keeps
+  // same-node traffic off the network and gives S3-spilled shuffles direct
+  // object reads from any executor (high availability).
+  SHUFFLE_READ_TRANSPORT_FILE_AND_FLIGHT = 1;
+  // Always fetch partitions over Arrow Flight from the executor that wrote
+  // them, even when a copy exists locally. Ignored for partitions that only
+  // exist on object storage (S3 spill), which are always read directly.
+  SHUFFLE_READ_TRANSPORT_FLIGHT_ONLY = 2;
+}
+
+// Distributed shuffle configuration for one submitted job. Every field has a
+// sane server-side default when left zero/empty, so old clients keep working.
+message ShuffleConfig {
+  // Read-side transport selection (see ``ShuffleReadTransport``).
+  ShuffleReadTransport read_transport = 1;
+  // Optional object-store URI (e.g. "s3://bucket/prefix/daft-shuffle") where
+  // intermediate shuffle partitions are spilled. When set, writers upload
+  // each partition to this location instead of executor-local disk and any
+  // executor can read any partition directly from object storage. When empty,
+  // shuffle files stay on the executor that wrote them and are served over
+  // Flight for remote readers.
+  string spill_uri = 2;
+  // Number of retries for a failed remote Flight fetch, 0 disables retry.
+  uint64 fetch_retries = 3;
+  // In-flight byte budget for remote Flight fetches on one executor
+  // (reduce-side backpressure). 0 = unlimited.
+  uint64 max_bytes_in_flight = 4;
+  // Maximum concurrent remote Flight requests per server address on one
+  // executor. 0 = unlimited.
+  uint64 max_concurrency_per_address = 5;
+  // Stats-driven partition coalescing (AQE-style): when a stage reads a
+  // single upstream shuffle, adjacent small partitions are merged into fewer
+  // reduce-side partitions. Default true.
+  bool coalesce_enabled = 6;
+  // Target bytes per coalesced reduce-side partition. 0 = server default.
+  uint64 coalesce_target_bytes = 7;
+  // Hard cap on the number of coalesced reduce-side partitions. 0 = server
+  // default (no cap beyond the upstream partition count).
+  uint64 coalesce_max_partitions = 8;
+  // Shuffles whose total bytes are below this threshold are broadcast-read:
+  // every reduce-side task reads all of their partitions instead of one
+  // slice. 0 = server default threshold.
+  uint64 broadcast_threshold_bytes = 9;
 }
 
 // Job status returned by GET/DELETE /v1/jobs/{job_id}.
@@ -109,6 +168,16 @@ message JobStatus {
 // control-plane response speaks the same protocol.
 message JobResult {
   bytes payload = 1;
+}
+
+// One incrementally published final-stage task result. HTTP streaming uses
+// the protocol's 4-byte little-endian length framing for each message.
+message JobResultChunk {
+  string job_id = 1;
+  uint64 task_id = 2;
+  bytes payload = 3;
+  bool end_of_stream = 4;
+  string error = 5;
 }
 
 // Runtime used to execute a UDF artifact.

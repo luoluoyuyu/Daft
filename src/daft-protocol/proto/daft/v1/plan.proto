@@ -6,6 +6,8 @@ option java_package = "com.daft.protocol.v1";
 option java_outer_classname = "PlanProto";
 option go_package = "daft/v1";
 
+import "daft/v1/runtime.proto";
+
 // ---------------------------------------------------------------------------
 // Daft logical plan wire schema.
 //
@@ -359,6 +361,23 @@ message ShuffleReadNode {
   // the task is built; 0 in the stage-DAG placeholder.
   uint64 partition_idx = 5;
   StatsState stats = 6;
+  // Partitions this task reads when the stage coalesces upstream partitions
+  // (AQE-style partition coalesce) or broadcasts a small shuffle. Empty means
+  // the task reads exactly ``partition_idx``. Filled by the scheduler when
+  // the task is built; 0 in the stage-DAG placeholder.
+  repeated uint64 coalesce_partitions = 7;
+  // Read-side transport choice for this node (job-level ShuffleConfig
+  // applied by the scheduler). 0/UNSPECIFIED means the default
+  // FILE_AND_FLIGHT behavior.
+  ShuffleReadTransport read_transport = 8;
+  // True when the scheduler marked this shuffle for broadcast read: every
+  // reduce-side task reads all partitions of the shuffle into one stream
+  // (used for small broadcast-side inputs). Coalesce_partitions then carries
+  // the full partition list.
+  bool broadcast = 9;
+  uint64 fetch_retries = 10;
+  uint64 max_bytes_in_flight = 11;
+  uint64 max_concurrency_per_address = 12;
 }
 
 message ShuffleWriteNode {
@@ -377,6 +396,10 @@ message ShuffleWriteNode {
   repeated string shuffle_dirs = 8;
   optional string compression = 9;
   StatsState stats = 10;
+  // Optional object-store URI ("s3://bucket/prefix") where this shuffle's
+  // partition files are spilled. Empty means executor-local disk (served
+  // over the writer's Flight server for remote readers).
+  string storage_uri = 11;
 }
 
 // Cache ids of one shuffle's partition files on one Flight server.

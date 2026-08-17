@@ -60,6 +60,7 @@ enum RepartitionBackend {
         repartition_spec: RepartitionSpec,
         shuffle_dirs: Vec<String>,
         compression: Option<String>,
+        storage_uri: String,
         local_server: Arc<ShuffleFlightServer>,
         target_in_memory_size_per_partition: usize,
         // Only accessed from the single-threaded event loop; Mutex is just for Sync.
@@ -93,6 +94,7 @@ impl RepartitionSink {
         repartition_spec: RepartitionSpec,
         shuffle_dirs: Vec<String>,
         compression: Option<String>,
+        storage_uri: String,
         local_server: Arc<ShuffleFlightServer>,
     ) -> DaftResult<Self> {
         const TARGET_TOTAL_IN_MEMORY_SIZE_BYTES: usize = 1024 * 1024 * 2000;
@@ -103,6 +105,7 @@ impl RepartitionSink {
                 repartition_spec,
                 shuffle_dirs,
                 compression,
+                storage_uri,
                 local_server,
                 target_in_memory_size_per_partition: (TARGET_TOTAL_IN_MEMORY_SIZE_BYTES
                     / num_partitions)
@@ -407,6 +410,7 @@ impl BlockingSink for RepartitionSink {
                 shuffle_id,
                 target_in_memory_size_per_partition,
                 compression,
+                storage_uri,
                 caches,
                 ..
             } => {
@@ -421,6 +425,8 @@ impl BlockingSink for RepartitionSink {
                             *shuffle_id,
                             *target_in_memory_size_per_partition,
                             compression.as_deref(),
+                            None,
+                            (!storage_uri.is_empty()).then_some(storage_uri.as_str()),
                         )?);
                         e.insert(cache.clone());
                         cache

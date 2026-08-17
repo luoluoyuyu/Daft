@@ -1444,6 +1444,7 @@ fn physical_plan_to_pipeline(
                     shuffle_id,
                     shuffle_dirs,
                     compression,
+                    storage_uri,
                 } => {
                     let (shuffle_server, _) = ctx
                         .shuffle_server()
@@ -1454,6 +1455,7 @@ fn physical_plan_to_pipeline(
                         repartition_spec.clone(),
                         shuffle_dirs.clone(),
                         compression.clone(),
+                        storage_uri.clone(),
                         shuffle_server,
                     )
                     .with_context(|_| PipelineCreationSnafu {
@@ -1494,6 +1496,12 @@ fn physical_plan_to_pipeline(
             ShuffleReadBackend::Flight {
                 shuffle_id,
                 server_cache_mapping,
+                coalesce_partitions,
+                read_transport,
+                broadcast,
+                fetch_retries,
+                max_bytes_in_flight,
+                max_concurrency_per_address,
             } => {
                 let (shuffle_server, shuffle_address) = ctx
                     .shuffle_server()
@@ -1508,6 +1516,12 @@ fn physical_plan_to_pipeline(
                     shuffle_address,
                     schema.clone(),
                     cfg,
+                    coalesce_partitions,
+                    *read_transport,
+                    *broadcast,
+                    *fetch_retries,
+                    *max_bytes_in_flight,
+                    *max_concurrency_per_address,
                 )
                 .with_context(|_| PipelineCreationSnafu {
                     plan_name: physical_plan.name(),

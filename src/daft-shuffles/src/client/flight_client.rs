@@ -11,6 +11,7 @@ use daft_recordbatch::RecordBatch;
 use daft_schema::field::FieldRef;
 use futures::{FutureExt, Stream, StreamExt};
 use tonic::transport::Endpoint;
+use tokio::time::{Duration, sleep};
 
 #[allow(clippy::large_enum_variant)]
 enum ClientState {
@@ -60,6 +61,7 @@ impl ShuffleFlightClient {
         partition_idx: usize,
         cache_ids: &[u32],
         schema: SchemaRef,
+        retries: u64,
     ) -> DaftResult<FlightRecordBatchStreamToDaftRecordBatchStream> {
         let cache_ids_str = cache_ids
             .iter()
@@ -70,19 +72,30 @@ impl ShuffleFlightClient {
             "{}:{}:{}",
             shuffle_id, partition_idx, cache_ids_str
         ));
-        let (address, client) = self.connect().await?;
-        let stream = client.do_get(ticket).await.map_err(|e| {
-            DaftError::External(
-                format!(
-                    "Error fetching partition: {} from shuffle {} at {} with cache_ids [{}]. {}",
-                    partition_idx, shuffle_id, address, cache_ids_str, e
-                )
-                .into(),
-            )
-        })?;
-        Ok(FlightRecordBatchStreamToDaftRecordBatchStream::new(
-            stream, schema,
-        ))
+        let mut attempt = 0;
+        loop {
+            let result = async {
+                let (address, client) = self.connect().await?;
+                client.do_get(ticket.clone()).await.map_err(|e| {
+                    DaftError::External(format!(
+                        "Error fetching partition: {partition_idx} from shuffle {shuffle_id} at {address} with cache_ids [{cache_ids_str}]. {e}"
+                    ).into())
+                })
+            }.await;
+            match result {
+                Ok(stream) => return Ok(FlightRecordBatchStreamToDaftRecordBatchStream::new(stream, schema)),
+                Err(_error) if attempt < retries => {
+                    attempt += 1;
+                    // Reconnect on the next attempt; a cached HTTP/2 channel may be the failed resource.
+                    let address = match &self.inner {
+                        ClientState::Uninitialized(address) | ClientState::Initialized(address, _) => address.clone(),
+                    };
+                    self.inner = ClientState::Uninitialized(address);
+                    sleep(Duration::from_millis(100u64.saturating_mul(1 << attempt.min(6)))).await;
+                }
+                Err(error) => return Err(error),
+            }
+        }
     }
 }
 

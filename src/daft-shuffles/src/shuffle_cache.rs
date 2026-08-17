@@ -1,10 +1,12 @@
+use std::sync::Arc;
+
 use common_error::{DaftError, DaftResult};
 use common_runtime::{RuntimeTask, get_io_runtime};
-use daft_io::{SourceType, parse_url};
+use daft_io::{SourceType, get_io_client, parse_url};
 use daft_micropartition::MicroPartition;
 use daft_recordbatch::RecordBatch;
 use daft_schema::schema::SchemaRef;
-use daft_writers::{AsyncFileWriter, make_ipc_writer};
+use daft_writers::{AsyncFileWriter, make_ipc_writer_with_storage};
 use itertools::Itertools;
 use tokio::sync::Mutex;
 
@@ -41,9 +43,11 @@ pub struct InProgressShuffleCache {
     writer_senders_weak: Vec<async_channel::WeakSender<MicroPartition>>,
     shuffle_dirs: Vec<String>,
     cache_id: String,
+    io_config: Option<Arc<daft_io::IOConfig>>,
 }
 
 impl InProgressShuffleCache {
+    #[allow(clippy::too_many_arguments)]
     pub fn try_new(
         num_partitions: usize,
         dirs: &[String],
@@ -51,46 +55,60 @@ impl InProgressShuffleCache {
         shuffle_id: u64,
         target_filesize: usize,
         compression: Option<&str>,
+        io_config: Option<daft_io::IOConfig>,
+        spill_uri: Option<&str>,
     ) -> DaftResult<Self> {
-        // Create the directories
+        // When a job-level spill URI is set, every partition file goes to the
+        // object store under a single logical location and any executor can
+        // read any partition directly (high availability). Otherwise shuffle
+        // files stay on executor-local disk.
+        let base_dirs: Vec<String> = if let Some(spill_uri) = spill_uri {
+            vec![spill_uri.to_string()]
+        } else {
+            dirs.to_vec()
+        };
+        let shuffle_dirs = get_shuffle_dirs(&base_dirs, cache_id.clone(), shuffle_id);
+
         // TODO: Add checks here, as well as periodic checks to ensure that the dirs are not too full. If so, we switch to directories with more space.
         // And raise an error if we can't find any directories with space.
-        let shuffle_dirs = get_shuffle_dirs(dirs, cache_id.clone(), shuffle_id);
         for dir in &shuffle_dirs {
-            // Check that the dir is a file
             let (source_type, _) = parse_url(dir)?;
-            if source_type != SourceType::File {
-                return Err(DaftError::ValueError(format!(
-                    "ShuffleCache only supports file paths, got: {}",
-                    dir
-                )));
+            if source_type == SourceType::File {
+                // If the directory doesn't exist, create it
+                if std::path::Path::new(dir).exists() {
+                    std::fs::remove_dir_all(dir)?;
+                }
+                std::fs::create_dir_all(dir)?;
             }
-
-            // If the directory doesn't exist, create it
-            if std::path::Path::new(dir).exists() {
-                std::fs::remove_dir_all(dir)?;
-            }
-            std::fs::create_dir_all(dir)?;
         }
 
         // Create the partition writers
         let mut writers = Vec::with_capacity(num_partitions);
         for partition_idx in 0..num_partitions {
             let partition_dir = get_partition_dir(&shuffle_dirs, partition_idx);
-            std::fs::create_dir_all(&partition_dir)?;
+            let (source_type, _) = parse_url(&partition_dir)?;
+            if source_type == SourceType::File {
+                std::fs::create_dir_all(&partition_dir)?;
+            }
 
-            let writer = make_ipc_writer(&partition_dir, target_filesize, compression)?;
+            let writer = make_ipc_writer_with_storage(
+                &partition_dir,
+                target_filesize,
+                compression,
+                io_config.clone(),
+            )?;
             writers.push(writer);
         }
 
         // Create the InProgressShuffleCache with the writers
-        Self::try_new_with_writers(writers, shuffle_dirs, cache_id)
+        Self::try_new_with_writers(writers, shuffle_dirs, cache_id, io_config.map(Arc::new))
     }
 
     fn try_new_with_writers(
         writers: Vec<Box<dyn AsyncFileWriter<Input = MicroPartition, Result = Vec<RecordBatch>>>>,
         shuffle_dirs: Vec<String>,
         cache_id: String,
+        io_config: Option<Arc<daft_io::IOConfig>>,
     ) -> DaftResult<Self> {
         let num_cpus = std::thread::available_parallelism().unwrap().get();
 
@@ -118,6 +136,7 @@ impl InProgressShuffleCache {
             writer_senders_weak: weak_senders,
             shuffle_dirs,
             cache_id,
+            io_config,
         })
     }
 
@@ -214,6 +233,7 @@ impl InProgressShuffleCache {
             bytes_per_partition,
             self.shuffle_dirs.clone(),
             self.cache_id.clone(),
+            self.io_config.clone(),
         ))
     }
 
@@ -292,9 +312,11 @@ pub struct ShuffleCache {
     bytes_per_partition: Vec<usize>,
     shuffle_dirs: Vec<String>,
     cache_id: String,
+    io_config: Option<Arc<daft_io::IOConfig>>,
 }
 
 impl ShuffleCache {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         schema: SchemaRef,
         bytes_per_file_per_partition: Vec<Vec<usize>>,
@@ -303,6 +325,7 @@ impl ShuffleCache {
         bytes_per_partition: Vec<usize>,
         shuffle_dirs: Vec<String>,
         cache_id: String,
+        io_config: Option<Arc<daft_io::IOConfig>>,
     ) -> Self {
         Self {
             schema,
@@ -312,6 +335,7 @@ impl ShuffleCache {
             bytes_per_partition,
             shuffle_dirs,
             cache_id,
+            io_config,
         }
     }
 
@@ -339,24 +363,71 @@ impl ShuffleCache {
         self.bytes_per_partition.clone()
     }
 
-    pub fn clear_partition(&self, partition_idx: usize) -> DaftResult<()> {
+    /// Best-effort removal of every file of one partition, local or
+    /// object-store.
+    pub async fn clear_partition(&self, partition_idx: usize) -> DaftResult<()> {
+        for file_path in self
+            .file_paths_per_partition
+            .get(partition_idx)
+            .map(|paths| paths.clone())
+            .unwrap_or_default()
+        {
+            self.delete_path(&file_path).await?;
+        }
         let partition_dir = get_partition_dir(&self.shuffle_dirs, partition_idx);
-        std::fs::remove_dir_all(partition_dir)?;
+        let (source_type, _) = parse_url(&partition_dir)?;
+        if source_type == SourceType::File {
+            let _ = std::fs::remove_dir_all(&partition_dir);
+        }
         Ok(())
     }
 
     /// Best-effort removal of every on-disk partition file owned by this
     /// cache. Used when the scheduler purges a completed job's shuffle.
-    pub fn cleanup_files(&self) {
+    pub async fn cleanup_files(&self) {
         for partition_idx in 0..self.file_paths_per_partition.len() {
-            let _ = self.clear_partition(partition_idx);
+            let _ = self.clear_partition(partition_idx).await;
         }
     }
 
-    pub fn clear_directories(&self) -> DaftResult<()> {
+    pub async fn clear_directories(&self) -> DaftResult<()> {
         for dir in &self.shuffle_dirs {
-            std::fs::remove_dir_all(dir)?;
+            let (source_type, _) = parse_url(dir)?;
+            if source_type == SourceType::File {
+                let _ = std::fs::remove_dir_all(dir);
+            }
         }
+        Ok(())
+    }
+
+    /// Delete a single shuffle file: local paths via std::fs, object-store
+    /// URIs via the daft-io client (credentials come from the same IOConfig
+    /// used to write the file).
+    async fn delete_path(&self, path: &str) -> DaftResult<()> {
+        let (source_type, _) = parse_url(path)?;
+        if source_type == SourceType::File {
+            if std::path::Path::new(path).exists() {
+                std::fs::remove_file(path)?;
+            }
+            return Ok(());
+        }
+        let io_config = self
+            .io_config
+            .clone()
+            .ok_or_else(|| {
+                DaftError::ValueError(
+                    "IO config required to delete object-store shuffle files".to_string(),
+                )
+            })?;
+        let io_client = get_io_client(true, io_config)?;
+        let (source, object_path) = io_client
+            .get_source_and_path(path)
+            .await
+            .map_err(|e| DaftError::External(e.into()))?;
+        source
+            .delete(&object_path, None)
+            .await
+            .map_err(|e| DaftError::External(e.into()))?;
         Ok(())
     }
 }
@@ -389,6 +460,7 @@ mod tests {
             writers,
             vec![],
             "test_cache".to_string(),
+            None,
         )?;
 
         // Create and push some partitions
@@ -439,6 +511,7 @@ mod tests {
             writers,
             vec![],
             "test_cache".to_string(),
+            None,
         )?;
 
         // Create and push some partitions
@@ -472,6 +545,7 @@ mod tests {
             writers,
             vec![],
             "test_cache".to_string(),
+            None,
         )?;
 
         // 1000 empty partitions, distributed across 5 writers
@@ -514,6 +588,7 @@ mod tests {
             writers,
             vec![],
             "test_cache".to_string(),
+            None,
         )?;
 
         let mut found_failure = false;
@@ -584,6 +659,7 @@ mod tests {
             writers,
             vec![],
             "test_cache".to_string(),
+            None,
         )?;
 
         // Create and push a partition

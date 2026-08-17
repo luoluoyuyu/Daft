@@ -192,6 +192,24 @@ def test_rust_runtime_native_path_does_not_need_python(rust_runtime) -> None:
     }
 
 
+def test_rust_runtime_streams_multistage_results(rust_runtime) -> None:
+    """A repartition barrier feeds final partitions through the result stream."""
+    endpoint, token = rust_runtime
+    client = RuntimeClient(endpoint, token=token, timeout_s=10.0)
+
+    df = daft.from_pydict({"id": list(range(12))}).into_partitions(3)
+    plan, execution, partition_sets = serialize_plan_parts(df)
+    job = client.submit(plan, execution=execution, partition_sets=partition_sets)
+
+    try:
+        partitions = list(job.iter_result_partitions())
+    except TimeoutError:
+        pytest.fail(f"result stream timed out with job status: {job.status()}")
+    values = sorted(value for partition in partitions for value in partition.to_pydict()["id"])
+    assert values == list(range(12))
+    assert len(partitions) == 3
+
+
 def test_rust_runtime_sql_execution(rust_runtime) -> None:
     """SQL is parsed and planned on the server; the client only ships the text."""
     endpoint, token = rust_runtime

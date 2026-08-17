@@ -26,6 +26,10 @@ pub struct ShuffleWrite {
     pub output_schema: SchemaRef,
     pub shuffle_dirs: Vec<String>,
     pub compression: Option<String>,
+    /// Optional object-store URI (e.g. "s3://bucket/prefix") where this
+    /// shuffle's partition files are spilled. Empty means executor-local
+    /// disk, served over the writer's Flight server for remote readers.
+    pub storage_uri: String,
     pub stats_state: StatsState,
 }
 
@@ -49,8 +53,14 @@ impl ShuffleWrite {
             output_schema,
             shuffle_dirs,
             compression,
+            storage_uri: String::new(),
             stats_state: StatsState::NotMaterialized,
         }
+    }
+
+    pub fn with_storage_uri(mut self, storage_uri: String) -> Self {
+        self.storage_uri = storage_uri;
+        self
     }
 
     pub fn with_plan_id(mut self, plan_id: usize) -> Self {

@@ -39,9 +39,9 @@ use daft_logical_plan::OutputFileInfo;
 use daft_micropartition::MicroPartition;
 use daft_recordbatch::RecordBatch;
 use file::TargetFileSizeWriterFactory;
-use ipc::IPCWriterFactory;
 #[cfg(feature = "python")]
 pub use lance::make_lance_writer_factory;
+pub use ipc::make_boxed_ipc_writer_factory;
 use partition::PartitionedWriterFactory;
 use physical::PhysicalWriterFactory;
 #[cfg(feature = "python")]
@@ -142,6 +142,20 @@ pub fn make_ipc_writer(
     target_filesize: usize,
     compression: Option<&str>,
 ) -> DaftResult<Box<dyn AsyncFileWriter<Input = MicroPartition, Result = Vec<RecordBatch>>>> {
+    make_ipc_writer_with_storage(dir, target_filesize, compression, None)
+}
+
+/// Like [`make_ipc_writer`] but with an optional object-store backend.
+///
+/// ``dir_uri`` may be a plain local path or an object-store URI such as
+/// ``s3://bucket/path``; ``io_config`` is required for object-store backends
+/// and ignored for local files.
+pub fn make_ipc_writer_with_storage(
+    dir_uri: &str,
+    target_filesize: usize,
+    compression: Option<&str>,
+    io_config: Option<daft_io::IOConfig>,
+) -> DaftResult<Box<dyn AsyncFileWriter<Input = MicroPartition, Result = Vec<RecordBatch>>>> {
     let compression = match compression {
         Some("lz4") => Some(arrow_ipc::CompressionType::LZ4_FRAME),
         Some("zstd") => Some(arrow_ipc::CompressionType::ZSTD),
@@ -153,13 +167,13 @@ pub fn make_ipc_writer(
         }
         None => None,
     };
-    let base_writer_factory = IPCWriterFactory::new(dir.to_string(), compression);
+    let base_writer_factory = make_boxed_ipc_writer_factory(dir_uri, compression, io_config)?;
     let file_size_calculator = TargetInMemorySizeBytesCalculator::new(
         target_filesize,
         if compression.is_some() { 2.0 } else { 1.0 },
     );
     let file_writer_factory = TargetFileSizeWriterFactory::new(
-        Arc::new(base_writer_factory),
+        base_writer_factory.into(),
         Arc::new(file_size_calculator),
     );
     let file_writer = file_writer_factory.create_writer(0, None)?;

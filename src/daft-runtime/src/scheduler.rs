@@ -15,9 +15,11 @@
 //! protobuf. JSON is never used on the wire.
 
 use std::{
-    collections::{HashMap, VecDeque},
-    sync::Arc,
-    sync::atomic::{AtomicU64, Ordering},
+    collections::{HashMap, HashSet, VecDeque},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use common_daft_config::DaftExecutionConfig;
@@ -30,7 +32,8 @@ use daft_logical_plan::{
 };
 use daft_protocol::{
     daft::v1::{
-        PartitionCache, ShuffleLocation, TaskDefinition, TaskState, UdfDescriptor,
+        PartitionCache, ShuffleConfig, ShuffleLocation, ShuffleReadTransport, TaskDefinition,
+        TaskState, UdfDescriptor,
     },
     decode, encode,
 };
@@ -67,9 +70,15 @@ pub enum DistJobState {
 /// durable job record.
 pub enum JobOutcome {
     /// The job finished: the fully assembled ``DAFTRES1`` envelope.
-    Succeeded(Vec<u8>),
+    Succeeded {
+        result: Vec<u8>,
+        task_id: u64,
+        chunk: Vec<u8>,
+    },
     /// The job failed: a human-readable error.
     Failed(String),
+    /// One final-stage task completed and can be published immediately.
+    ResultReady { task_id: u64, chunk: Vec<u8> },
     /// Nothing terminal happened yet.
     InProgress,
 }
@@ -104,6 +113,15 @@ struct StageTasks {
     completed: usize,
 }
 
+#[derive(Clone)]
+struct TaskLease {
+    task: TaskDefinition,
+    worker_id: String,
+    deadline_ms: u64,
+}
+
+const MAX_TASK_ATTEMPTS: u64 = 3;
+
 /// The complete scheduler-side state of one distributed job.
 pub struct DistributedJob {
     pub job_id: Uuid,
@@ -119,6 +137,8 @@ pub struct DistributedJob {
     final_results: HashMap<(u64, u64), Vec<u8>>,
     /// Assembled job result envelope, set on success.
     result: Option<Vec<u8>>,
+    leases: HashMap<(u64, u64), TaskLease>,
+    succeeded_tasks: HashSet<(u64, u64)>,
 }
 
 impl DistributedJob {
@@ -130,6 +150,7 @@ impl DistributedJob {
         udf_artifact_ids: Vec<String>,
         udf_artifacts: HashMap<String, Vec<u8>>,
         python_version: String,
+        shuffle: ShuffleConfig,
     ) -> Result<Self, String> {
         let mut ready_stages = VecDeque::new();
         let mut stage_tasks = Vec::with_capacity(stages.len());
@@ -141,6 +162,7 @@ impl DistributedJob {
                 &udf_artifact_ids,
                 &udf_artifacts,
                 &python_version,
+                &shuffle,
             )?;
             for task in &mut tasks {
                 task.job_id = job_id.to_string();
@@ -172,11 +194,19 @@ impl DistributedJob {
             ready_stages,
             final_results: HashMap::new(),
             result: None,
+            leases: HashMap::new(),
+            succeeded_tasks: HashSet::new(),
         })
     }
 
     /// Pop one ready task for an executor, or `None` when nothing is ready.
-    pub fn poll(&mut self, _worker_id: &str) -> Option<TaskDefinition> {
+    pub fn lease_task(
+        &mut self,
+        worker_id: &str,
+        now_ms: u64,
+        lease_timeout_ms: u64,
+    ) -> Option<TaskDefinition> {
+        self.expire_leases(now_ms);
         if self.state == DistJobState::Pending {
             self.state = DistJobState::Running;
         }
@@ -213,10 +243,86 @@ impl DistributedJob {
                         .collect();
                 }
             }
-            self.ready_stages.push_back(stage_id);
+            if !self.stages[index].tasks.is_empty() {
+                self.ready_stages.push_back(stage_id);
+            }
+            self.leases.insert(
+                (task.stage_id, task.task_id),
+                TaskLease {
+                    task: task.clone(),
+                    worker_id: worker_id.to_string(),
+                    deadline_ms: now_ms.saturating_add(lease_timeout_ms),
+                },
+            );
             return Some(task);
         }
         None
+    }
+
+    pub fn reject_lease(&mut self, task: &TaskDefinition) {
+        let key = (task.stage_id, task.task_id);
+        if self
+            .leases
+            .get(&key)
+            .is_some_and(|lease| lease.task.task_attempt == task.task_attempt)
+        {
+            let lease = self.leases.remove(&key).expect("checked above");
+            self.requeue(lease.task, "worker rejected task launch");
+        }
+    }
+
+    pub fn expire_worker(&mut self, worker_id: &str) {
+        let expired: Vec<_> = self
+            .leases
+            .iter()
+            .filter(|(_, lease)| lease.worker_id == worker_id)
+            .map(|(key, _)| *key)
+            .collect();
+        for key in expired {
+            if let Some(lease) = self.leases.remove(&key) {
+                self.requeue(lease.task, "worker heartbeat expired");
+            }
+        }
+    }
+
+    pub fn expire_leases(&mut self, now_ms: u64) {
+        let expired: Vec<_> = self
+            .leases
+            .iter()
+            .filter(|(_, lease)| lease.deadline_ms <= now_ms)
+            .map(|(key, _)| *key)
+            .collect();
+        for key in expired {
+            if let Some(lease) = self.leases.remove(&key) {
+                self.requeue(lease.task, "task lease expired");
+            }
+        }
+    }
+
+    fn requeue(&mut self, mut task: TaskDefinition, error: &str) {
+        task.task_attempt = task.task_attempt.saturating_add(1);
+        if task.task_attempt >= MAX_TASK_ATTEMPTS {
+            self.state = DistJobState::Failed;
+            self.error = Some(format!(
+                "task {}/{}/{} exhausted {} attempts; last error: {}",
+                task.job_id,
+                task.stage_id,
+                task.task_id,
+                MAX_TASK_ATTEMPTS,
+                if error.is_empty() { "unknown task failure" } else { error }
+            ));
+            return;
+        }
+        if let Some(stage) = self
+            .stages
+            .iter_mut()
+            .find(|stage| stage.stage.stage_id == task.stage_id)
+        {
+            stage.tasks.push(task);
+            if !self.ready_stages.contains(&stage.stage.stage_id) {
+                self.ready_stages.push_back(stage.stage.stage_id);
+            }
+        }
     }
 
     /// Collect every shuffle location this job produced:
@@ -241,17 +347,25 @@ impl DistributedJob {
             return JobOutcome::InProgress;
         }
 
+        let key = (status.stage_id, status.task_id);
+        let Some(lease) = self.leases.get(&key) else {
+            return JobOutcome::InProgress;
+        };
+        if lease.task.task_attempt != status.task_attempt {
+            return JobOutcome::InProgress;
+        }
+        if status.state == TaskState::Running as i32 {
+            return JobOutcome::InProgress;
+        }
+        let lease = self.leases.remove(&key).expect("validated above");
         if status.state == TaskState::Failed as i32 {
-            self.state = DistJobState::Failed;
-            self.error = Some(if status.error.is_empty() {
-                format!(
-                    "task {}/{}/{} failed",
-                    status.job_id, status.stage_id, status.task_id
-                )
-            } else {
-                status.error.clone()
-            });
-            return JobOutcome::Failed(self.error.clone().expect("set above"));
+            self.requeue(lease.task, &status.error);
+            if self.state == DistJobState::Failed {
+                return JobOutcome::Failed(
+                    self.error.clone().unwrap_or_else(|| status.error.clone()),
+                );
+            }
+            return JobOutcome::InProgress;
         }
         if status.state != TaskState::Succeeded as i32 {
             return JobOutcome::InProgress;
@@ -265,6 +379,9 @@ impl DistributedJob {
             return JobOutcome::InProgress;
         };
 
+        if !self.succeeded_tasks.insert(key) {
+            return JobOutcome::InProgress;
+        }
         let stage = self.stages[stage_index].stage.clone();
         self.stages[stage_index].completed += 1;
         let stage_tasks = &mut self.stages[stage_index];
@@ -283,9 +400,7 @@ impl DistributedJob {
             // same flight address. Merge (dedup) the ids instead of
             // overwriting, otherwise earlier caches become unreachable.
             let locations = self.shuffle_locations.entry(shuffle_id).or_default();
-            let ids = locations
-                .entry(status.flight_address.clone())
-                .or_default();
+            let ids = locations.entry(status.flight_address.clone()).or_default();
             for cache_id in &status.cache_ids {
                 if !ids.contains(cache_id) {
                     ids.push(*cache_id);
@@ -328,13 +443,22 @@ impl DistributedJob {
                     Ok(result) => {
                         self.state = DistJobState::Succeeded;
                         self.result = Some(result.clone());
-                        JobOutcome::Succeeded(result)
+                        JobOutcome::Succeeded {
+                            result,
+                            task_id: status.task_id,
+                            chunk: status.result.clone(),
+                        }
                     }
                     Err(error) => {
                         self.state = DistJobState::Failed;
                         self.error = Some(error.clone());
                         JobOutcome::Failed(error)
                     }
+                };
+            } else {
+                return JobOutcome::ResultReady {
+                    task_id: status.task_id,
+                    chunk: status.result.clone(),
                 };
             }
         }
@@ -372,10 +496,7 @@ impl DistributedJob {
             .map(|task_ids| {
                 task_ids
                     .iter()
-                    .filter_map(|task_id| {
-                        self.final_results
-                            .get(&(final_stage_id, *task_id))
-                    })
+                    .filter_map(|task_id| self.final_results.get(&(final_stage_id, *task_id)))
                     .map(|v| v.as_slice())
                     .collect()
             })
@@ -405,7 +526,6 @@ impl DistributedJob {
     pub fn completed_tasks(&self) -> u64 {
         self.stages.iter().map(|s| s.completed as u64).sum()
     }
-
 }
 
 /// Decode, optimize, materialize and split a submitted plan into a
@@ -418,6 +538,7 @@ pub fn build_distributed_job(
     udf_artifact_ids: Vec<String>,
     udf_artifacts: HashMap<String, Vec<u8>>,
     python_version: String,
+    shuffle: ShuffleConfig,
 ) -> Result<DistributedJob, String> {
     let proto_plan = decode::<daft_protocol::daft::v1::LogicalPlan>(&plan_bytes)
         .map_err(|e| format!("failed to decode logical plan: {e}"))?;
@@ -447,7 +568,7 @@ pub fn build_distributed_job(
     // collide with those of an earlier (completed) job on an executor's
     // Flight server.
     ctx.next_shuffle_id = NEXT_SHUFFLE_BLOCK.fetch_add(SHUFFLE_IDS_PER_JOB, Ordering::Relaxed);
-    let root = split(plan, &mut ctx)
+    let root = split(plan, &mut ctx, &shuffle)
         .map_err(|e| format!("failed to split plan into stages: {e}"))?;
     eprintln!(
         "[scheduler] build_distributed_job: split produced {} intermediate stages",
@@ -476,6 +597,7 @@ pub fn build_distributed_job(
         udf_artifact_ids,
         udf_artifacts,
         python_version,
+        shuffle,
     )
 }
 
@@ -501,10 +623,14 @@ struct SplitResult {
 /// upstream subtree is wrapped in a `ShuffleWrite` node that becomes a new
 /// intermediate stage. Multi-input nodes (Join/Concat/Intersect/Union) recurse
 /// into each child independently, so each side keeps its own stages.
-fn split(plan: LogicalPlanRef, ctx: &mut SplitCtx) -> DaftResult<SplitResult> {
+fn split(
+    plan: LogicalPlanRef,
+    ctx: &mut SplitCtx,
+    shuffle: &ShuffleConfig,
+) -> DaftResult<SplitResult> {
     match plan.as_ref() {
         LogicalPlan::Repartition(repartition) => {
-            let input_result = split(repartition.input.clone(), ctx)?;
+            let input_result = split(repartition.input.clone(), ctx, shuffle)?;
             let upstream_n =
                 plan_partition_count(&input_result.plan, &ctx.shuffle_partition_counts);
             let num_partitions = repartition
@@ -516,15 +642,17 @@ fn split(plan: LogicalPlanRef, ctx: &mut SplitCtx) -> DaftResult<SplitResult> {
                 Some(repartition.repartition_spec.clone()),
                 num_partitions,
                 ctx,
+                shuffle,
             )
         }
         LogicalPlan::IntoPartitions(into_partitions) => {
-            let input_result = split(into_partitions.input.clone(), ctx)?;
+            let input_result = split(into_partitions.input.clone(), ctx, shuffle)?;
             split_boundary(
                 input_result,
                 None,
                 into_partitions.num_partitions,
                 ctx,
+                shuffle,
             )
         }
         _ => {
@@ -543,12 +671,15 @@ fn split(plan: LogicalPlanRef, ctx: &mut SplitCtx) -> DaftResult<SplitResult> {
             let mut stages = Vec::new();
             let mut new_children = Vec::with_capacity(children.len());
             for child in children {
-                let child_result = split(child, ctx)?;
+                let child_result = split(child, ctx, shuffle)?;
                 stages.extend(child_result.stages);
                 new_children.push(child_result.plan);
             }
             let new_plan = Arc::new(plan.as_ref().with_new_children(&new_children));
-            Ok(SplitResult { plan: new_plan, stages })
+            Ok(SplitResult {
+                plan: new_plan,
+                stages,
+            })
         }
     }
 }
@@ -560,20 +691,24 @@ fn split_boundary(
     spec: Option<RepartitionSpec>,
     num_partitions: usize,
     ctx: &mut SplitCtx,
+    shuffle: &ShuffleConfig,
 ) -> DaftResult<SplitResult> {
     let shuffle_id = ctx.next_shuffle_id;
     ctx.next_shuffle_id += 1;
     let stage_id = ctx.next_stage_id;
     ctx.next_stage_id += 1;
 
-    let stage_plan: LogicalPlanRef = Arc::new(LogicalPlan::ShuffleWrite(ShuffleWrite::new(
-        input_result.plan.clone(),
-        shuffle_id,
-        num_partitions,
-        spec,
-        Vec::new(),
-        None,
-    )));
+    let stage_plan: LogicalPlanRef = Arc::new(LogicalPlan::ShuffleWrite(
+        ShuffleWrite::new(
+            input_result.plan.clone(),
+            shuffle_id,
+            num_partitions,
+            spec,
+            Vec::new(),
+            None,
+        )
+        .with_storage_uri(shuffle.spill_uri.clone()),
+    ));
 
     // UDFs are only allowed in the final stage (the Python worker cannot
     // execute shuffle reads/writes yet).
@@ -586,12 +721,18 @@ fn split_boundary(
     }
 
     let schema = stage_plan.schema();
-    let read_leaf: LogicalPlanRef = Arc::new(LogicalPlan::ShuffleRead(ShuffleRead::new(
-        schema,
-        shuffle_id,
-        0,
-    )));
-    ctx.shuffle_partition_counts.insert(shuffle_id, num_partitions);
+    let mut read = ShuffleRead::new(schema, shuffle_id, 0);
+    read.read_transport = if shuffle.read_transport == ShuffleReadTransport::Unspecified as i32 {
+        ShuffleReadTransport::FileAndFlight as i32
+    } else {
+        shuffle.read_transport
+    };
+    read.fetch_retries = shuffle.fetch_retries;
+    read.max_bytes_in_flight = shuffle.max_bytes_in_flight;
+    read.max_concurrency_per_address = shuffle.max_concurrency_per_address;
+    let read_leaf: LogicalPlanRef = Arc::new(LogicalPlan::ShuffleRead(read));
+    ctx.shuffle_partition_counts
+        .insert(shuffle_id, num_partitions);
 
     let mut stages = input_result.stages;
     stages.push(Stage {
@@ -627,7 +768,10 @@ fn plan_partition_count(plan: &LogicalPlanRef, shuffle_counts: &HashMap<u64, usi
         _ => {
             let mut max = 1usize;
             for child in plan.as_ref().children() {
-                max = max.max(plan_partition_count(&Arc::new(child.clone()), shuffle_counts));
+                max = max.max(plan_partition_count(
+                    &Arc::new(child.clone()),
+                    shuffle_counts,
+                ));
             }
             max
         }
@@ -661,6 +805,7 @@ fn build_stage_tasks(
     udf_artifact_ids: &[String],
     udf_artifacts: &HashMap<String, Vec<u8>>,
     python_version: &str,
+    shuffle: &ShuffleConfig,
 ) -> Result<Vec<TaskDefinition>, String> {
     let mut tasks = Vec::with_capacity(stage.num_partitions);
     // UDF descriptors, artifacts and the interpreter version only matter for
@@ -688,8 +833,9 @@ fn build_stage_tasks(
         String::new()
     };
     for partition_idx in 0..stage.num_partitions {
-        let task_plan = transform_for_task(&stage.plan, partition_idx, stage.num_partitions)
-            .map_err(|e| format!("failed to restrict plan to partition slice: {e}"))?;
+        let task_plan =
+            transform_for_task(&stage.plan, partition_idx, stage.num_partitions, shuffle)
+                .map_err(|e| format!("failed to restrict plan to partition slice: {e}"))?;
         let proto_plan = plan_to_proto(&task_plan)
             .map_err(|e| format!("failed to serialize stage plan: {e}"))?;
         let plan_bytes = encode(&proto_plan);
@@ -699,12 +845,7 @@ fn build_stage_tasks(
             .iter()
             .map(|shuffle_id| {
                 let servers = HashMap::new();
-                (
-                    *shuffle_id,
-                    ShuffleLocation {
-                        servers,
-                    },
-                )
+                (*shuffle_id, ShuffleLocation { servers })
             })
             .collect::<HashMap<_, _>>();
 
@@ -738,6 +879,7 @@ fn transform_for_task(
     plan: &LogicalPlanRef,
     partition_idx: usize,
     num_partitions: usize,
+    shuffle: &ShuffleConfig,
 ) -> DaftResult<LogicalPlanRef> {
     match plan.as_ref() {
         LogicalPlan::Source(source) => match source.source_info.as_ref() {
@@ -756,13 +898,20 @@ fn transform_for_task(
             },
             _ => Ok(plan.clone()),
         },
-        LogicalPlan::ShuffleRead(read) => Ok(Arc::new(LogicalPlan::ShuffleRead(
-            ShuffleRead::new(
+        LogicalPlan::ShuffleRead(read) => {
+            let mut task_read = ShuffleRead::new(
                 read.output_schema.clone(),
                 read.shuffle_id,
                 partition_idx % num_partitions.max(1),
-            ),
-        ))),
+            );
+            task_read.read_transport = read.read_transport;
+            task_read.coalesce_partitions = read.coalesce_partitions.clone();
+            task_read.broadcast = read.broadcast;
+            task_read.fetch_retries = shuffle.fetch_retries;
+            task_read.max_bytes_in_flight = shuffle.max_bytes_in_flight;
+            task_read.max_concurrency_per_address = shuffle.max_concurrency_per_address;
+            Ok(Arc::new(LogicalPlan::ShuffleRead(task_read)))
+        }
         _ => {
             let children: Vec<LogicalPlanRef> = plan
                 .as_ref()
@@ -775,7 +924,12 @@ fn transform_for_task(
             }
             let mut new_children = Vec::with_capacity(children.len());
             for child in children {
-                new_children.push(transform_for_task(&child, partition_idx, num_partitions)?);
+                new_children.push(transform_for_task(
+                    &child,
+                    partition_idx,
+                    num_partitions,
+                    shuffle,
+                )?);
             }
             Ok(Arc::new(plan.as_ref().with_new_children(&new_children)))
         }

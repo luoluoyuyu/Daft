@@ -13,8 +13,9 @@ import "daft/v1/plan.proto";
 // ---------------------------------------------------------------------------
 // Daft distributed execution control plane.
 //
-// Executors register with the scheduler over HTTP (same protobuf envelope as
-// the rest of the runtime protocol), then poll for work. A job is split into
+// Workers register with the manager over HTTP (same protobuf envelope as
+// the rest of the runtime protocol). The manager actively launches tasks on
+// worker HTTP endpoints. A job is split into
 // a DAG of stages at the logical-plan level; each stage is split into tasks
 // (stage x partition slice) that executors pick up. Intermediate stages write
 // shuffle partitions over Arrow Flight; downstream stages read them back
@@ -44,6 +45,8 @@ message ExecutorRegistration {
   uint64 memory_bytes = 5;
   // Python interpreter version for UDF tasks, e.g. "3.11.9".
   string python_version = 6;
+  // Maximum number of tasks accepted concurrently by this worker.
+  uint32 task_slots = 7;
 }
 
 // Response to POST /v1/executors/register.
@@ -56,11 +59,26 @@ message ExecutorRegistrationResponse {
 message ExecutorHeartbeat {
   string worker_id = 1;
   uint64 timestamp_ms = 2;
+  uint32 running_tasks = 3;
+  uint32 free_slots = 4;
+  uint64 memory_used_bytes = 5;
 }
 
 // Response to POST /v1/executors/heartbeat.
 message ExecutorHeartbeatResponse {
   bool ok = 1;
+}
+
+// Manager-initiated task launch on POST /v1/worker/launch-task.
+message LaunchTaskRequest {
+  TaskDefinition task = 1;
+  uint64 lease_timeout_ms = 2;
+}
+
+message LaunchTaskResponse {
+  bool accepted = 1;
+  string worker_id = 2;
+  string message = 3;
 }
 
 // Request body for POST /v1/executors/poll.
@@ -88,6 +106,16 @@ message PollWorkResponse {
 message PurgeShuffle {
   uint64 shuffle_id = 1;
   repeated uint32 cache_ids = 2;
+}
+
+// Manager-initiated cache cleanup on POST /v1/worker/purge-shuffle.
+message PurgeShuffleRequest {
+  repeated PurgeShuffle purges = 1;
+}
+
+message PurgeShuffleResponse {
+  bool accepted = 1;
+  string message = 2;
 }
 
 // A single schedulable unit: one partition slice of one stage.

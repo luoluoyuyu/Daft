@@ -17,7 +17,8 @@
 #![allow(clippy::too_many_arguments)]
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
+    convert::Infallible,
     net::SocketAddr,
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -25,7 +26,7 @@ use std::{
 
 use axum::{
     Router,
-    body::Bytes,
+    body::{Body, Bytes},
     extract::{Path, Request, State},
     http::{StatusCode, header},
     middleware::{self, Next},
@@ -34,18 +35,19 @@ use axum::{
 };
 use daft_protocol::{
     daft::v1::{
-        poll_work_response, Error as ProtoError, ExecutorHeartbeat,
-        ExecutorHeartbeatResponse, ExecutorRegistration, ExecutorRegistrationResponse,
-        ExecutorTaskStatusResponse, DistributedJobStatus, JobState as ProtoJobState, JobStatus,
-        JobSubmitRequest, JobSubmitResponse, JobResult, PollWorkRequest, PollWorkResponse,
-        PurgeShuffle, SqlSubmitRequest, TaskStatus, UdfArtifact, UdfArtifactMetadata, UdfDescriptor,
-        UploadUdfArtifactRequest, UploadUdfArtifactResponse, WorkerInfo, WorkerList,
+        DistributedJobStatus, Error as ProtoError, ExecutorHeartbeat, ExecutorHeartbeatResponse,
+        ExecutorRegistration, ExecutorRegistrationResponse, ExecutorTaskStatusResponse, JobResult,
+        JobResultChunk, JobState as ProtoJobState, JobStatus, JobSubmitRequest, JobSubmitResponse,
+        LaunchTaskRequest, LaunchTaskResponse, PollWorkRequest, PollWorkResponse, PurgeShuffle,
+        PurgeShuffleRequest, PurgeShuffleResponse, SqlSubmitRequest, TaskStatus, UdfArtifact,
+        UdfArtifactMetadata, UdfDescriptor, UploadUdfArtifactRequest, UploadUdfArtifactResponse,
+        WorkerInfo, WorkerList, poll_work_response,
     },
-    encode,
+    encode, encode_length_prefixed,
 };
 use prost::Message;
 use sha2::{Digest, Sha256};
-use tokio::sync::RwLock;
+use tokio::sync::{Notify, RwLock, mpsc};
 use uuid::Uuid;
 
 pub mod executor;
@@ -107,6 +109,102 @@ impl JobRecord {
 struct ExecutorInfo {
     registration: ExecutorRegistration,
     last_heartbeat_ms: u64,
+    free_slots: u32,
+}
+
+struct ResultStreamOrder {
+    next_task_id: u64,
+    pending: BTreeMap<u64, Vec<u8>>,
+    active: bool,
+    terminal_error: Option<Option<String>>,
+}
+
+struct JobResultStream {
+    sender: mpsc::Sender<JobResultChunk>,
+    receiver: Mutex<Option<mpsc::Receiver<JobResultChunk>>>,
+    order: tokio::sync::Mutex<ResultStreamOrder>,
+}
+
+impl JobResultStream {
+    fn new() -> Arc<Self> {
+        let (sender, receiver) = mpsc::channel(1);
+        Arc::new(Self {
+            sender,
+            receiver: Mutex::new(Some(receiver)),
+            order: tokio::sync::Mutex::new(ResultStreamOrder {
+                next_task_id: 0,
+                pending: BTreeMap::new(),
+                active: false,
+                terminal_error: None,
+            }),
+        })
+    }
+
+    async fn publish(&self, job_id: Uuid, task_id: u64, payload: Vec<u8>) {
+        let mut order = self.order.lock().await;
+        order.pending.entry(task_id).or_insert(payload);
+        self.flush_locked(job_id, &mut order).await;
+    }
+
+    async fn finish(&self, job_id: Uuid, error: Option<String>) {
+        let mut order = self.order.lock().await;
+        order.terminal_error = Some(error);
+        self.flush_locked(job_id, &mut order).await;
+    }
+
+    fn finish_unstarted(&self, job_id: Uuid, error: String) {
+        let _ = self.sender.try_send(JobResultChunk {
+            job_id: job_id.to_string(),
+            task_id: 0,
+            payload: Vec::new(),
+            end_of_stream: true,
+            error,
+        });
+    }
+
+    async fn activate(&self, job_id: Uuid) {
+        let mut order = self.order.lock().await;
+        order.active = true;
+        self.flush_locked(job_id, &mut order).await;
+    }
+
+    async fn flush_locked(&self, job_id: Uuid, order: &mut ResultStreamOrder) {
+        if !order.active {
+            return;
+        }
+        while let Some(payload) = order.pending.remove(&order.next_task_id) {
+            let task_id = order.next_task_id;
+            order.next_task_id += 1;
+            if self
+                .sender
+                .send(JobResultChunk {
+                    job_id: job_id.to_string(),
+                    task_id,
+                    payload,
+                    end_of_stream: false,
+                    error: String::new(),
+                })
+                .await
+                .is_err()
+            {
+                return;
+            }
+        }
+        if order.pending.is_empty()
+            && let Some(error) = order.terminal_error.take()
+        {
+            let _ = self
+                .sender
+                .send(JobResultChunk {
+                    job_id: job_id.to_string(),
+                    task_id: order.next_task_id,
+                    payload: Vec::new(),
+                    end_of_stream: true,
+                    error: error.unwrap_or_default(),
+                })
+                .await;
+        }
+    }
 }
 
 #[derive(Default, Clone)]
@@ -122,6 +220,8 @@ pub struct RuntimeState {
     /// drained by [`RuntimeState::poll_work`], which piggybacks them onto the
     /// next poll response for the owning executor.
     pending_purges: Arc<Mutex<HashMap<String, Vec<PurgeShuffle>>>>,
+    result_streams: Arc<Mutex<HashMap<Uuid, Arc<JobResultStream>>>>,
+    dispatch_notify: Arc<Notify>,
     token: Option<String>,
 }
 
@@ -151,6 +251,7 @@ impl RuntimeState {
         let python_version = request.python_version;
         let partition_sets = request.partition_sets;
         let artifact_ids = request.udf_artifact_ids;
+        let shuffle = request.shuffle.unwrap_or_default();
         let artifact_files: HashMap<String, Vec<u8>> = artifact_files.into_iter().collect();
         std::thread::spawn(move || {
             state.schedule_job(
@@ -161,6 +262,7 @@ impl RuntimeState {
                 artifact_ids,
                 artifact_files,
                 python_version,
+                shuffle,
             );
         });
         Ok(JobSubmitResponse {
@@ -175,10 +277,7 @@ impl RuntimeState {
     /// [`crate::sql`]). The produced plan follows the exact same distributed
     /// scheduling path as a directly submitted plan. SQL does not support
     /// Python UDFs yet, so the job carries no descriptors or artifacts.
-    pub async fn submit_sql(
-        &self,
-        request: SqlSubmitRequest,
-    ) -> Result<JobSubmitResponse, String> {
+    pub async fn submit_sql(&self, request: SqlSubmitRequest) -> Result<JobSubmitResponse, String> {
         if request.sql.trim().is_empty() {
             return Err("SqlSubmitRequest.sql must not be empty".to_string());
         }
@@ -187,11 +286,12 @@ impl RuntimeState {
         let partition_sets = request.partition_sets;
         let sql_text = request.sql;
         let bindings = request.bindings;
+        let shuffle = request.shuffle.unwrap_or_default();
         std::thread::spawn(move || {
             let plan_bytes = match crate::sql::plan_sql_job(&sql_text, bindings) {
                 Ok(bytes) => bytes,
                 Err(error) => {
-                    state.fail_job(id, error);
+                    state.fail_unstarted_job(id, error);
                     return;
                 }
             };
@@ -203,6 +303,7 @@ impl RuntimeState {
                 Vec::new(),
                 HashMap::new(),
                 String::new(),
+                shuffle,
             );
         });
         Ok(JobSubmitResponse {
@@ -222,6 +323,7 @@ impl RuntimeState {
         artifact_ids: Vec<String>,
         artifact_files: HashMap<String, Vec<u8>>,
         python_version: String,
+        shuffle: daft_protocol::daft::v1::ShuffleConfig,
     ) {
         let result = scheduler::build_distributed_job(
             id,
@@ -231,8 +333,12 @@ impl RuntimeState {
             artifact_ids,
             artifact_files,
             python_version,
+            shuffle,
         );
-        eprintln!("[scheduler] build_distributed_job for {id}: {}", if result.is_ok() { "ok" } else { "error" });
+        eprintln!(
+            "[scheduler] build_distributed_job for {id}: {}",
+            if result.is_ok() { "ok" } else { "error" }
+        );
         match result {
             Ok(job) => {
                 eprintln!(
@@ -244,18 +350,28 @@ impl RuntimeState {
                     record.state = JobState::Running;
                 }
                 self.distributed_jobs.lock().unwrap().insert(id, job);
+                self.dispatch_notify.notify_one();
             }
-            Err(error) => self.fail_job(id, error),
+            Err(error) => self.fail_unstarted_job(id, error),
         }
     }
 
     /// Mark a durable job record Failed. Used when planning or scheduling
     /// fails before any task is dispatched.
     fn fail_job(&self, id: Uuid, error: String) {
-        let mut jobs = self.jobs.lock().unwrap();
-        if let Some(record) = jobs.get_mut(&id) {
-            record.state = JobState::Failed;
-            record.error = Some(error);
+        {
+            let mut jobs = self.jobs.lock().unwrap();
+            if let Some(record) = jobs.get_mut(&id) {
+                record.state = JobState::Failed;
+                record.error = Some(error.clone());
+            }
+        }
+    }
+
+    fn fail_unstarted_job(&self, id: Uuid, error: String) {
+        self.fail_job(id, error.clone());
+        if let Some(stream) = self.result_stream_for(id) {
+            stream.finish_unstarted(id, error);
         }
     }
 
@@ -286,10 +402,8 @@ impl RuntimeState {
                     cache_ids,
                 });
         }
-        eprintln!(
-            "[scheduler] enqueued {} purge requests for job {id}",
-            count
-        );
+        eprintln!("[scheduler] enqueued {} purge requests for job {id}", count);
+        self.dispatch_notify.notify_one();
     }
 
     /// Snapshot the (filename, payload) pairs of the requested UDF artifacts
@@ -317,6 +431,10 @@ impl RuntimeState {
     /// Create a new pending job record and return its id.
     fn create_job_record(&self) -> Uuid {
         let id = Uuid::new_v4();
+        self.result_streams
+            .lock()
+            .unwrap()
+            .insert(id, JobResultStream::new());
         self.jobs.lock().unwrap().insert(
             id,
             JobRecord {
@@ -340,13 +458,16 @@ impl RuntimeState {
                 message: "worker_id must not be empty".to_string(),
             };
         }
+        let slots = registration.task_slots.max(1);
         self.executors.lock().unwrap().insert(
             registration.worker_id.clone(),
             ExecutorInfo {
                 registration,
                 last_heartbeat_ms: now_ms(),
+                free_slots: slots,
             },
         );
+        self.dispatch_notify.notify_one();
         ExecutorRegistrationResponse {
             accepted: true,
             message: "registered".to_string(),
@@ -362,6 +483,8 @@ impl RuntimeState {
         match executors.get_mut(&heartbeat.worker_id) {
             Some(info) => {
                 info.last_heartbeat_ms = heartbeat.timestamp_ms.max(now_ms());
+                info.free_slots = heartbeat.free_slots;
+                self.dispatch_notify.notify_one();
                 ExecutorHeartbeatResponse { ok: true }
             }
             None => ExecutorHeartbeatResponse { ok: false },
@@ -373,10 +496,7 @@ impl RuntimeState {
     /// Stages become ready as their upstream shuffles complete; within a
     /// stage, tasks are dispatched in partition order. Jobs are scanned
     /// round-robin so a busy job cannot starve later ones.
-    pub async fn poll_work(
-        &self,
-        request: PollWorkRequest,
-    ) -> Result<PollWorkResponse, String> {
+    pub async fn poll_work(&self, request: PollWorkRequest) -> Result<PollWorkResponse, String> {
         // Drain this executor's queued purge instructions and piggyback them
         // onto its next response. Executors are identified by worker id on
         // the wire, but purges are keyed by Flight address, so resolve the
@@ -407,7 +527,7 @@ impl RuntimeState {
         }
         let mut jobs = self.distributed_jobs.lock().unwrap();
         for job in jobs.values_mut() {
-            if let Some(task) = job.poll(&request.worker_id) {
+            if let Some(task) = job.lease_task(&request.worker_id, now_ms(), 60_000) {
                 eprintln!(
                     "[scheduler] poll: dispatched task {}/{} to {}",
                     task.job_id, task.task_id, request.worker_id
@@ -451,12 +571,21 @@ impl RuntimeState {
                 .ok_or_else(|| format!("unknown distributed job {job_id}"))?;
             job.on_task_status(&status)
         };
-        let mut records = self.jobs.lock().unwrap();
-        let record = records
-            .get_mut(&job_id)
-            .ok_or_else(|| format!("unknown job {job_id}"))?;
+        self.dispatch_notify.notify_one();
         match outcome {
-            scheduler::JobOutcome::Succeeded(result) => {
+            scheduler::JobOutcome::Succeeded {
+                result,
+                task_id,
+                chunk,
+            } => {
+                if let Some(stream) = self.result_stream_for(job_id) {
+                    stream.publish(job_id, task_id, chunk).await;
+                    stream.finish(job_id, None).await;
+                }
+                let mut records = self.jobs.lock().unwrap();
+                let record = records
+                    .get_mut(&job_id)
+                    .ok_or_else(|| format!("unknown job {job_id}"))?;
                 record.state = JobState::Succeeded;
                 record.result = Some(result.into());
                 self.enqueue_purges(job_id);
@@ -467,6 +596,13 @@ impl RuntimeState {
                 })
             }
             scheduler::JobOutcome::Failed(error) => {
+                if let Some(stream) = self.result_stream_for(job_id) {
+                    stream.finish(job_id, Some(error.clone())).await;
+                }
+                let mut records = self.jobs.lock().unwrap();
+                let record = records
+                    .get_mut(&job_id)
+                    .ok_or_else(|| format!("unknown job {job_id}"))?;
                 record.state = JobState::Failed;
                 record.error = Some(error);
                 self.enqueue_purges(job_id);
@@ -476,10 +612,158 @@ impl RuntimeState {
                     message: "job failed".to_string(),
                 })
             }
+            scheduler::JobOutcome::ResultReady { task_id, chunk } => {
+                if let Some(stream) = self.result_stream_for(job_id) {
+                    stream.publish(job_id, task_id, chunk).await;
+                }
+                Ok(ExecutorTaskStatusResponse {
+                    accepted: true,
+                    message: "result chunk published".to_string(),
+                })
+            }
             scheduler::JobOutcome::InProgress => Ok(ExecutorTaskStatusResponse {
                 accepted: true,
                 message: String::new(),
             }),
+        }
+    }
+
+    async fn dispatch_once(&self) -> bool {
+        const HEARTBEAT_TIMEOUT_MS: u64 = 15_000;
+        const LEASE_TIMEOUT_MS: u64 = 60_000;
+        if self.dispatch_one_purge().await {
+            return true;
+        }
+        let now = now_ms();
+        let failed_jobs = {
+            let mut jobs = self.distributed_jobs.lock().unwrap();
+            for job in jobs.values_mut() {
+                job.expire_leases(now);
+            }
+            jobs.iter()
+                .filter(|(_, job)| job.state == scheduler::DistJobState::Failed)
+                .map(|(id, job)| {
+                    (
+                        *id,
+                        job.error
+                            .clone()
+                            .unwrap_or_else(|| "distributed job failed".to_string()),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        for (job_id, error) in failed_jobs {
+            self.fail_job(job_id, error.clone());
+            if let Some(stream) = self.result_stream_for(job_id) {
+                stream.finish(job_id, Some(error)).await;
+            }
+            self.enqueue_purges(job_id);
+            self.distributed_jobs.lock().unwrap().remove(&job_id);
+        }
+        let candidate = {
+            let mut executors = self.executors.lock().unwrap();
+            let lost: Vec<_> = executors
+                .iter()
+                .filter(|(_, info)| {
+                    now.saturating_sub(info.last_heartbeat_ms) > HEARTBEAT_TIMEOUT_MS
+                })
+                .map(|(id, _)| id.clone())
+                .collect();
+            for worker_id in &lost {
+                executors.remove(worker_id);
+            }
+            drop(executors);
+            if !lost.is_empty() {
+                let mut jobs = self.distributed_jobs.lock().unwrap();
+                for job in jobs.values_mut() {
+                    for worker_id in &lost {
+                        job.expire_worker(worker_id);
+                    }
+                }
+            }
+            let executors = self.executors.lock().unwrap();
+            executors
+                .iter()
+                .find(|(_, info)| info.free_slots > 0 && !info.registration.address.is_empty())
+                .map(|(id, info)| (id.clone(), info.registration.address.clone()))
+        };
+        let Some((worker_id, worker_address)) = candidate else {
+            return false;
+        };
+        let task = {
+            let mut jobs = self.distributed_jobs.lock().unwrap();
+            jobs.values_mut()
+                .find_map(|job| job.lease_task(&worker_id, now, LEASE_TIMEOUT_MS))
+        };
+        let Some(task) = task else {
+            return false;
+        };
+        if let Some(info) = self.executors.lock().unwrap().get_mut(&worker_id) {
+            info.free_slots = info.free_slots.saturating_sub(1);
+        }
+        let request = LaunchTaskRequest {
+            task: Some(task.clone()),
+            lease_timeout_ms: LEASE_TIMEOUT_MS,
+        };
+        let accepted = post_control::<_, LaunchTaskResponse>(
+            &format!("{worker_address}/v1/worker/launch-task"),
+            &request,
+            self.token.as_deref(),
+        )
+        .await
+        .is_ok_and(|response| response.accepted);
+        if !accepted {
+            if let Ok(job_id) = task.job_id.parse::<Uuid>() {
+                if let Some(job) = self.distributed_jobs.lock().unwrap().get_mut(&job_id) {
+                    job.reject_lease(&task);
+                }
+            }
+            if let Some(info) = self.executors.lock().unwrap().get_mut(&worker_id) {
+                info.free_slots = info.free_slots.saturating_add(1);
+            }
+        }
+        true
+    }
+
+    async fn dispatch_one_purge(&self) -> bool {
+        let target = {
+            let pending = self.pending_purges.lock().unwrap();
+            let Some((flight_address, purges)) = pending.iter().next() else {
+                return false;
+            };
+            let worker_address = self
+                .executors
+                .lock()
+                .unwrap()
+                .values()
+                .find(|info| info.registration.flight_address == *flight_address)
+                .map(|info| info.registration.address.clone());
+            worker_address.map(|address| (flight_address.clone(), address, purges.clone()))
+        };
+        let Some((flight_address, worker_address, purges)) = target else {
+            return false;
+        };
+        let request = PurgeShuffleRequest { purges };
+        let accepted = post_control::<_, PurgeShuffleResponse>(
+            &format!("{worker_address}/v1/worker/purge-shuffle"),
+            &request,
+            self.token.as_deref(),
+        )
+        .await
+        .is_ok_and(|response| response.accepted);
+        if accepted {
+            self.pending_purges.lock().unwrap().remove(&flight_address);
+        }
+        accepted
+    }
+
+    async fn dispatch_loop(self) {
+        loop {
+            while self.dispatch_once().await {}
+            tokio::select! {
+                _ = self.dispatch_notify.notified() => {},
+                _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => {},
+            }
         }
     }
 
@@ -535,6 +819,21 @@ impl RuntimeState {
         }
     }
 
+    fn take_result_stream(&self, id: Uuid) -> Option<mpsc::Receiver<JobResultChunk>> {
+        self.result_streams
+            .lock()
+            .unwrap()
+            .get(&id)?
+            .receiver
+            .lock()
+            .unwrap()
+            .take()
+    }
+
+    fn result_stream_for(&self, id: Uuid) -> Option<Arc<JobResultStream>> {
+        self.result_streams.lock().unwrap().get(&id).cloned()
+    }
+
     pub async fn register_worker(&self, worker: WorkerInfo) {
         self.workers
             .write()
@@ -583,7 +882,9 @@ impl RuntimeState {
         let artifact = artifacts.get(artifact_id)?;
         Some(UdfArtifact {
             metadata: Some(artifact.metadata.clone()),
-            payload: include_payload.then(|| artifact.payload.to_vec()).unwrap_or_default(),
+            payload: include_payload
+                .then(|| artifact.payload.to_vec())
+                .unwrap_or_default(),
         })
     }
 }
@@ -597,10 +898,7 @@ fn proto_response<M: Message>(status: StatusCode, message: &M) -> Response {
         .expect("valid response")
 }
 
-async fn submit(
-    State(state): State<RuntimeState>,
-    body: Bytes,
-) -> Response {
+async fn submit(State(state): State<RuntimeState>, body: Bytes) -> Response {
     let request = match JobSubmitRequest::decode(body) {
         Ok(request) => request,
         Err(e) => {
@@ -618,10 +916,7 @@ async fn submit(
     }
 }
 
-async fn submit_sql(
-    State(state): State<RuntimeState>,
-    body: Bytes,
-) -> Response {
+async fn submit_sql(State(state): State<RuntimeState>, body: Bytes) -> Response {
     let request = match SqlSubmitRequest::decode(body) {
         Ok(request) => request,
         Err(e) => {
@@ -639,10 +934,7 @@ async fn submit_sql(
     }
 }
 
-async fn status(
-    Path(id): Path<Uuid>,
-    State(state): State<RuntimeState>,
-) -> Response {
+async fn status(Path(id): Path<Uuid>, State(state): State<RuntimeState>) -> Response {
     state
         .status(id)
         .await
@@ -657,10 +949,7 @@ async fn status(
         })
 }
 
-async fn result(
-    Path(id): Path<Uuid>,
-    State(state): State<RuntimeState>,
-) -> Response {
+async fn result(Path(id): Path<Uuid>, State(state): State<RuntimeState>) -> Response {
     match state.result(id).await {
         Some(Ok(bytes)) => proto_response(
             StatusCode::OK,
@@ -681,10 +970,35 @@ async fn result(
     }
 }
 
-async fn cancel(
-    Path(id): Path<Uuid>,
-    State(state): State<RuntimeState>,
-) -> Response {
+async fn result_stream(Path(id): Path<Uuid>, State(state): State<RuntimeState>) -> Response {
+    let Some(receiver) = state.take_result_stream(id) else {
+        return proto_response(
+            StatusCode::CONFLICT,
+            &ProtoError {
+                message: "unknown job or result stream already consumed".to_string(),
+            },
+        );
+    };
+    let result_state = state
+        .result_stream_for(id)
+        .expect("stream existed when receiver was taken");
+    tokio::spawn(async move { result_state.activate(id).await });
+    let stream = futures::stream::unfold(receiver, |mut receiver| async move {
+        receiver.recv().await.map(|chunk| {
+            (
+                Ok::<Bytes, Infallible>(Bytes::from(encode_length_prefixed(&chunk))),
+                receiver,
+            )
+        })
+    });
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/x-protobuf-stream")
+        .body(Body::from_stream(stream))
+        .expect("valid result stream response")
+}
+
+async fn cancel(Path(id): Path<Uuid>, State(state): State<RuntimeState>) -> Response {
     state
         .cancel(id)
         .await
@@ -724,10 +1038,7 @@ async fn workers(State(state): State<RuntimeState>) -> Response {
     proto_response(StatusCode::OK, &workers)
 }
 
-async fn upload_udf_artifact(
-    State(state): State<RuntimeState>,
-    body: Bytes,
-) -> Response {
+async fn upload_udf_artifact(State(state): State<RuntimeState>, body: Bytes) -> Response {
     let request = match UploadUdfArtifactRequest::decode(body) {
         Ok(request) => request,
         Err(e) => {
@@ -786,10 +1097,7 @@ async fn download_udf_artifact(
         })
 }
 
-async fn register_executor(
-    State(state): State<RuntimeState>,
-    body: Bytes,
-) -> Response {
+async fn register_executor(State(state): State<RuntimeState>, body: Bytes) -> Response {
     let request = match ExecutorRegistration::decode(body) {
         Ok(request) => request,
         Err(e) => {
@@ -805,10 +1113,7 @@ async fn register_executor(
     proto_response(StatusCode::OK, &response)
 }
 
-async fn executor_heartbeat(
-    State(state): State<RuntimeState>,
-    body: Bytes,
-) -> Response {
+async fn executor_heartbeat(State(state): State<RuntimeState>, body: Bytes) -> Response {
     let request = match ExecutorHeartbeat::decode(body) {
         Ok(request) => request,
         Err(e) => {
@@ -824,10 +1129,7 @@ async fn executor_heartbeat(
     proto_response(StatusCode::OK, &response)
 }
 
-async fn poll_work(
-    State(state): State<RuntimeState>,
-    body: Bytes,
-) -> Response {
+async fn poll_work(State(state): State<RuntimeState>, body: Bytes) -> Response {
     let request = match PollWorkRequest::decode(body) {
         Ok(request) => request,
         Err(e) => {
@@ -845,10 +1147,7 @@ async fn poll_work(
     }
 }
 
-async fn report_task_status(
-    State(state): State<RuntimeState>,
-    body: Bytes,
-) -> Response {
+async fn report_task_status(State(state): State<RuntimeState>, body: Bytes) -> Response {
     let request = match TaskStatus::decode(body) {
         Ok(request) => request,
         Err(e) => {
@@ -866,11 +1165,7 @@ async fn report_task_status(
     }
 }
 
-async fn authorize(
-    State(state): State<RuntimeState>,
-    request: Request,
-    next: Next,
-) -> Response {
+async fn authorize(State(state): State<RuntimeState>, request: Request, next: Next) -> Response {
     if let Some(expected) = &state.token {
         let provided = request
             .headers()
@@ -895,6 +1190,7 @@ pub fn router(state: RuntimeState) -> Router {
         .route("/v1/sql", post(submit_sql))
         .route("/v1/jobs/{id}", get(status).delete(cancel))
         .route("/v1/jobs/{id}/result", get(result))
+        .route("/v1/jobs/{id}/result-stream", get(result_stream))
         .route("/v1/distributed-jobs/{id}", get(distributed_job_status))
         .route("/v1/workers", get(workers))
         .route("/v1/udf-artifacts", post(upload_udf_artifact))
@@ -916,7 +1212,30 @@ pub fn router(state: RuntimeState) -> Router {
 
 pub async fn serve(addr: SocketAddr, token: Option<String>) -> std::io::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, router(RuntimeState::with_token(token))).await
+    let state = RuntimeState::with_token(token);
+    tokio::spawn(state.clone().dispatch_loop());
+    axum::serve(listener, router(state)).await
+}
+
+async fn post_control<Req: Message, Resp: Message + Default>(
+    url: &str,
+    request: &Req,
+    token: Option<&str>,
+) -> Result<Resp, String> {
+    let client = reqwest::Client::new();
+    let mut builder = client
+        .post(url)
+        .header(reqwest::header::CONTENT_TYPE, PROTOBUF_CONTENT_TYPE)
+        .body(encode(request));
+    if let Some(token) = token {
+        builder = builder.bearer_auth(token);
+    }
+    let response = builder.send().await.map_err(|e| e.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("{url} returned {}", response.status()));
+    }
+    let body = response.bytes().await.map_err(|e| e.to_string())?;
+    Resp::decode(body).map_err(|e| e.to_string())
 }
 
 /// Write UDF artifact payloads to a per-job temp directory and return its path.
@@ -999,8 +1318,9 @@ fn now_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use daft_protocol::daft::v1::UdfRuntime;
+
+    use super::*;
 
     #[tokio::test]
     async fn stores_udf_artifacts_by_content_digest() {
@@ -1034,6 +1354,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn result_stream_reorders_out_of_order_final_tasks() {
+        let job_id = Uuid::new_v4();
+        let stream = JobResultStream::new();
+        stream.publish(job_id, 1, b"second".to_vec()).await;
+        stream.publish(job_id, 0, b"first".to_vec()).await;
+        stream.finish(job_id, None).await;
+        let mut receiver = stream.receiver.lock().unwrap().take().unwrap();
+        let active = stream.clone();
+        tokio::spawn(async move { active.activate(job_id).await });
+
+        let first = receiver.recv().await.unwrap();
+        let second = receiver.recv().await.unwrap();
+        let end = receiver.recv().await.unwrap();
+        assert_eq!((first.task_id, first.payload), (0, b"first".to_vec()));
+        assert_eq!((second.task_id, second.payload), (1, b"second".to_vec()));
+        assert!(end.end_of_stream);
+    }
+
+    #[tokio::test]
+    async fn result_stream_applies_capacity_one_backpressure() {
+        let job_id = Uuid::new_v4();
+        let stream = JobResultStream::new();
+        let mut receiver = stream.receiver.lock().unwrap().take().unwrap();
+        stream.order.lock().await.active = true;
+        stream.publish(job_id, 0, b"first".to_vec()).await;
+
+        let producer = stream.clone();
+        let blocked = tokio::spawn(async move {
+            producer.publish(job_id, 1, b"second".to_vec()).await;
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert!(!blocked.is_finished(), "second chunk bypassed backpressure");
+
+        assert_eq!(receiver.recv().await.unwrap().task_id, 0);
+        blocked.await.unwrap();
+        assert_eq!(receiver.recv().await.unwrap().task_id, 1);
+    }
+
+    #[tokio::test]
     async fn submit_and_status_round_trip() {
         let state = RuntimeState::default();
         let response = state
@@ -1043,6 +1402,7 @@ mod tests {
                 udfs: Vec::new(),
                 udf_artifact_ids: Vec::new(),
                 python_version: String::new(),
+                shuffle: None,
             })
             .await
             .unwrap();
@@ -1090,10 +1450,7 @@ mod tests {
             "bundle.zip"
         );
         // Derived from the entrypoint module.
-        assert_eq!(
-            resolve_artifact_filename(&metadata("mod:fn", "")),
-            "mod.py"
-        );
+        assert_eq!(resolve_artifact_filename(&metadata("mod:fn", "")), "mod.py");
         // Dotted modules flatten to an importable single-file name.
         assert_eq!(
             resolve_artifact_filename(&metadata("pkg.mod:fn", "")),
@@ -1109,14 +1466,8 @@ mod tests {
     #[test]
     fn artifact_filename_sanitization() {
         assert_eq!(sanitize_artifact_filename("mod.py"), "mod.py");
-        assert_eq!(
-            sanitize_artifact_filename("../evil.py"),
-            "evil.py"
-        );
-        assert_eq!(
-            sanitize_artifact_filename("a/b/mod.py"),
-            "mod.py"
-        );
+        assert_eq!(sanitize_artifact_filename("../evil.py"), "evil.py");
+        assert_eq!(sanitize_artifact_filename("a/b/mod.py"), "mod.py");
         assert_eq!(sanitize_artifact_filename(".."), "artifact.bin");
         assert_eq!(sanitize_artifact_filename(""), "artifact.bin");
     }

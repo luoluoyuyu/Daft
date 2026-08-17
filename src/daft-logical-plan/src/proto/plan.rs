@@ -174,6 +174,12 @@ pub fn plan_to_proto(plan: &LogicalPlan) -> DaftResult<proto::LogicalPlan> {
                 output_schema: Some(shuffle_read.output_schema.to_proto()?),
                 shuffle_id: shuffle_read.shuffle_id,
                 partition_idx: shuffle_read.partition_idx as u64,
+                coalesce_partitions: shuffle_read.coalesce_partitions.clone(),
+                read_transport: shuffle_read.read_transport as i32,
+                broadcast: shuffle_read.broadcast,
+                fetch_retries: shuffle_read.fetch_retries,
+                max_bytes_in_flight: shuffle_read.max_bytes_in_flight,
+                max_concurrency_per_address: shuffle_read.max_concurrency_per_address,
                 stats: Some(stats_state_to_proto(&shuffle_read.stats_state)),
             })
         }
@@ -194,6 +200,7 @@ pub fn plan_to_proto(plan: &LogicalPlan) -> DaftResult<proto::LogicalPlan> {
                 output_schema: Some(shuffle_write.output_schema.to_proto()?),
                 shuffle_dirs: shuffle_write.shuffle_dirs.clone(),
                 compression: shuffle_write.compression.clone(),
+                storage_uri: shuffle_write.storage_uri.clone(),
                 stats: Some(stats_state_to_proto(&shuffle_write.stats_state)),
             }))
         }
@@ -665,6 +672,12 @@ pub fn plan_from_proto(plan: proto::LogicalPlan) -> DaftResult<Arc<LogicalPlan>>
                 )?,
                 shuffle_id: shuffle_read.shuffle_id,
                 partition_idx: shuffle_read.partition_idx as usize,
+                coalesce_partitions: shuffle_read.coalesce_partitions,
+                read_transport: shuffle_read.read_transport,
+                broadcast: shuffle_read.broadcast,
+                fetch_retries: shuffle_read.fetch_retries,
+                max_bytes_in_flight: shuffle_read.max_bytes_in_flight,
+                max_concurrency_per_address: shuffle_read.max_concurrency_per_address,
                 stats_state: stats_state_from_proto(required_or_default(
                     shuffle_read.stats,
                     "ShuffleReadNode.stats",
@@ -693,6 +706,7 @@ pub fn plan_from_proto(plan: proto::LogicalPlan) -> DaftResult<Arc<LogicalPlan>>
                 )?,
                 shuffle_dirs: shuffle_write.shuffle_dirs,
                 compression: shuffle_write.compression,
+                storage_uri: shuffle_write.storage_uri,
                 stats_state: stats_state_from_proto(required_or_default(
                     shuffle_write.stats,
                     "ShuffleWriteNode.stats",

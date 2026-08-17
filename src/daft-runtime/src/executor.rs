@@ -1,4 +1,4 @@
-//! Distributed executor: registers with the scheduler, polls for tasks, and
+//! Distributed worker: registers with the manager and accepts pushed tasks.
 //! executes them against the local (pure-Rust) engine.
 //!
 //! The executor binary never links CPython. Plans that contain Python UDFs
@@ -10,31 +10,48 @@
 //! plain HTTP (``application/x-protobuf``) — JSON is never used on the wire.
 
 use std::{
-    collections::HashMap,
-    sync::Arc,
+    collections::{HashMap, HashSet},
+    net::SocketAddr,
+    sync::{
+        Arc,
+        atomic::{AtomicU32, Ordering},
+    },
 };
 
+use axum::{
+    Router,
+    body::Bytes,
+    extract::{Request, State},
+    http::{StatusCode, header},
+    middleware::{self, Next},
+    response::Response,
+    routing::post,
+};
 use common_daft_config::DaftExecutionConfig;
 use common_treenode::{Transformed, TreeNode};
+use daft_local_execution::NativeExecutor;
+use daft_local_plan::translate::translate_distributed;
 use daft_logical_plan::{
     InMemoryInfo, LogicalPlan, LogicalPlanRef, SourceInfo,
     ops::{ShuffleRead, Source},
     proto::{plan_from_proto, plan_to_proto},
 };
-use daft_local_execution::NativeExecutor;
-use daft_local_plan::translate::translate_distributed;
 use daft_micropartition::{MicroPartition, MicroPartitionRef};
 use daft_protocol::{
     daft::v1::{
-        poll_work_response, ExecutorHeartbeat, ExecutorHeartbeatResponse, ExecutorRegistration,
-        ExecutorRegistrationResponse, ExecutorTaskStatusResponse, PollWorkRequest,
-        PollWorkResponse, TaskDefinition, TaskState, TaskStatus,
+        ExecutorHeartbeat, ExecutorHeartbeatResponse, ExecutorRegistration,
+        ExecutorRegistrationResponse, ExecutorTaskStatusResponse, LaunchTaskRequest,
+        LaunchTaskResponse, PurgeShuffleRequest, PurgeShuffleResponse, TaskDefinition, TaskState,
+        TaskStatus,
     },
     decode, encode,
 };
 use prost::Message;
 use reqwest::header::CONTENT_TYPE;
-use tokio::time::{sleep, Duration};
+use tokio::{
+    sync::{Mutex, Semaphore},
+    time::{Duration, sleep},
+};
 use uuid::Uuid;
 
 use crate::{native, python_worker};
@@ -52,6 +69,18 @@ enum TaskOutcome {
     Result(Vec<u8>),
 }
 
+#[derive(Clone)]
+struct WorkerState {
+    worker_id: String,
+    manager_address: String,
+    token: Option<String>,
+    client: reqwest::Client,
+    native: Arc<Mutex<NativeExecutor>>,
+    slots: Arc<Semaphore>,
+    running: Arc<AtomicU32>,
+    accepted: Arc<Mutex<HashSet<(String, u64, u64, u64)>>>,
+}
+
 /// Run the executor loop until the process is terminated.
 ///
 /// ``scheduler_address`` is the control-plane base URL (e.g.
@@ -65,6 +94,16 @@ pub async fn run(
 ) -> Result<(), String> {
     let client = reqwest::Client::new();
     let worker_id = Uuid::new_v4().to_string();
+    let bind_address: SocketAddr = std::env::var("DAFT_WORKER_ADDRESS")
+        .unwrap_or_else(|_| "127.0.0.1:0".to_string())
+        .parse()
+        .map_err(|e| format!("invalid DAFT_WORKER_ADDRESS: {e}"))?;
+    let listener = tokio::net::TcpListener::bind(bind_address)
+        .await
+        .map_err(|e| format!("failed to bind worker HTTP server: {e}"))?;
+    let local_address = listener.local_addr().map_err(|e| e.to_string())?;
+    let worker_address = std::env::var("DAFT_WORKER_ADVERTISE_ADDRESS")
+        .unwrap_or_else(|_| format!("http://{local_address}"));
 
     // A single Flight server (and a single NativeExecutor) is reused for every
     // task this process runs: intermediate stages register shuffle caches on
@@ -73,7 +112,7 @@ pub async fn run(
     // with a blocking receive, which panics on an async runtime thread; start
     // it on a blocking thread instead.
     let flight_ip_owned = flight_ip.to_string();
-    let mut native = tokio::task::spawn_blocking(move || NativeExecutor::new(true, &flight_ip_owned))
+    let native = tokio::task::spawn_blocking(move || NativeExecutor::new(true, &flight_ip_owned))
         .await
         .map_err(|e| format!("failed to start executor flight server: {e}"))?;
     let flight_address = native
@@ -84,33 +123,49 @@ pub async fn run(
     );
 
     let control_address = format!("{scheduler_address}/v1/executors");
+    let task_slots = 1u32;
     let registration = ExecutorRegistration {
         worker_id: worker_id.clone(),
-        address: control_address.clone(),
+        address: worker_address.clone(),
         flight_address: flight_address.clone(),
         cpu_capacity: std::thread::available_parallelism()
             .map(|n| n.get() as f64)
             .unwrap_or(1.0),
         memory_bytes: 0,
         python_version: String::new(),
+        task_slots,
     };
     let accepted = register(&client, &control_address, &registration, token.as_deref()).await?;
-    println!(
-        "[executor {worker_id}] registered with scheduler: accepted={accepted}",
-    );
+    println!("[executor {worker_id}] registered with scheduler: accepted={accepted}",);
 
-    // Heartbeat the scheduler on its own task so a long-running task cannot
+    let state = WorkerState {
+        worker_id: worker_id.clone(),
+        manager_address: control_address.clone(),
+        token: token.clone(),
+        client: client.clone(),
+        native: Arc::new(Mutex::new(native)),
+        slots: Arc::new(Semaphore::new(task_slots as usize)),
+        running: Arc::new(AtomicU32::new(0)),
+        accepted: Arc::new(Mutex::new(HashSet::new())),
+    };
+
+    // Heartbeat the manager independently of task execution.
     // stall liveness reporting.
     let heartbeat_client = client.clone();
     let heartbeat_worker_id = worker_id.clone();
     let heartbeat_address = control_address.clone();
     let heartbeat_token = token.clone();
+    let heartbeat_running = state.running.clone();
+    let heartbeat_slots = state.slots.clone();
     tokio::spawn(async move {
         loop {
             sleep(Duration::from_secs(3)).await;
             let heartbeat = ExecutorHeartbeat {
                 worker_id: heartbeat_worker_id.clone(),
                 timestamp_ms: now_ms(),
+                running_tasks: heartbeat_running.load(Ordering::Relaxed),
+                free_slots: heartbeat_slots.available_permits() as u32,
+                memory_used_bytes: 0,
             };
             let response: Result<ExecutorHeartbeatResponse, String> = post_protobuf(
                 &heartbeat_client,
@@ -125,126 +180,224 @@ pub async fn run(
         }
     });
 
-    // Poll for work and execute one task at a time. Concurrency across tasks
-    // is provided by running more executors; a single sequential loop keeps
-    // the shared Flight server and NativeExecutor free of cross-task races.
-    loop {
-        let request = PollWorkRequest {
-            worker_id: worker_id.clone(),
-        };
-        let response: PollWorkResponse = match post_protobuf(
-            &client,
-            &format!("{control_address}/poll"),
-            &request,
-            token.as_deref(),
-        )
-        .await
-        {
-            Ok(response) => response,
-            Err(error) => {
-                eprintln!("[executor] poll failed: {error}");
-                sleep(Duration::from_millis(500)).await;
-                continue;
-            }
-        };
+    println!("[worker {worker_id}] control server at {worker_address}");
+    let auth_state = state.clone();
+    let app = Router::new()
+        .route("/v1/worker/launch-task", post(launch_task))
+        .route("/v1/worker/purge-shuffle", post(purge_shuffle))
+        .with_state(state)
+        .layer(middleware::from_fn_with_state(auth_state, authorize_worker));
+    axum::serve(listener, app).await.map_err(|e| e.to_string())
+}
 
-        // Drop caches the scheduler no longer needs (completed jobs). Apply
-        // these before running the next task so purge I/O cannot race with a
-        // new shuffle that happens to reuse the same directories.
-        for purge in &response.purge_shuffles {
-            let Some(shuffle_server) = native.shuffle_server() else {
-                eprintln!("[executor] cannot purge shuffle: no flight server");
-                continue;
-            };
-            match shuffle_server
-                .purge_shuffle_caches(purge.shuffle_id, &purge.cache_ids)
-                .await
-            {
-                Ok(()) => eprintln!(
-                    "[executor] purged shuffle {} caches {:?}",
-                    purge.shuffle_id, purge.cache_ids
-                ),
-                Err(error) => eprintln!(
-                    "[executor] failed to purge shuffle {}: {error}",
-                    purge.shuffle_id
-                ),
-            }
+async fn launch_task(State(state): State<WorkerState>, body: Bytes) -> Response {
+    let request = match LaunchTaskRequest::decode(body) {
+        Ok(request) => request,
+        Err(error) => {
+            return worker_response(
+                StatusCode::BAD_REQUEST,
+                &LaunchTaskResponse {
+                    accepted: false,
+                    worker_id: state.worker_id.clone(),
+                    message: error.to_string(),
+                },
+            );
         }
-
-        let Some(task) = response.work.and_then(|work| match work {
-            poll_work_response::Work::Task(task) => Some(task),
-            poll_work_response::Work::NoWork(_) => None,
-        }) else {
-            sleep(Duration::from_millis(200)).await;
-            continue;
-        };
-
-        println!(
-            "[executor {worker_id}] executing task {}:{}/{} (stage {})",
-            task.job_id, task.stage_id, task.task_id, task.partition_idx
+    };
+    let Some(task) = request.task else {
+        return worker_response(
+            StatusCode::BAD_REQUEST,
+            &LaunchTaskResponse {
+                accepted: false,
+                worker_id: state.worker_id.clone(),
+                message: "missing task".to_string(),
+            },
         );
-        let outcome = execute_task(&mut native, &task).await;
-        let status = match outcome {
-            Ok(TaskOutcome::Shuffle {
-                flight_address,
-                cache_ids,
-            }) => TaskStatus {
-                job_id: task.job_id.clone(),
-                stage_id: task.stage_id,
-                task_id: task.task_id,
-                task_attempt: task.task_attempt,
-                state: TaskState::Succeeded as i32,
-                error: String::new(),
-                result: Vec::new(),
-                flight_address,
-                cache_ids,
-            },
-            Ok(TaskOutcome::Result(result)) => TaskStatus {
-                job_id: task.job_id.clone(),
-                stage_id: task.stage_id,
-                task_id: task.task_id,
-                task_attempt: task.task_attempt,
-                state: TaskState::Succeeded as i32,
-                error: String::new(),
-                result,
-                flight_address: String::new(),
-                cache_ids: Vec::new(),
-            },
-            Err(error) => {
-                eprintln!(
-                    "[executor {worker_id}] task {}:{}/{} failed: {error}",
-                    task.job_id, task.stage_id, task.task_id
-                );
-                TaskStatus {
+    };
+    let key = (
+        task.job_id.clone(),
+        task.stage_id,
+        task.task_id,
+        task.task_attempt,
+    );
+    {
+        let mut accepted = state.accepted.lock().await;
+        if accepted.contains(&key) {
+            return worker_response(
+                StatusCode::OK,
+                &LaunchTaskResponse {
+                    accepted: true,
+                    worker_id: state.worker_id.clone(),
+                    message: "duplicate accepted".to_string(),
+                },
+            );
+        }
+        let Ok(permit) = state.slots.clone().try_acquire_owned() else {
+            return worker_response(
+                StatusCode::TOO_MANY_REQUESTS,
+                &LaunchTaskResponse {
+                    accepted: false,
+                    worker_id: state.worker_id.clone(),
+                    message: "worker has no free task slot".to_string(),
+                },
+            );
+        };
+        accepted.insert(key.clone());
+        let task_state = state.clone();
+        tokio::spawn(async move {
+            task_state.running.fetch_add(1, Ordering::Relaxed);
+            let running = task_status(&task, TaskState::Running, String::new());
+            let _: Result<ExecutorTaskStatusResponse, String> = post_protobuf(
+                &task_state.client,
+                &format!("{}/task-status", task_state.manager_address),
+                &running,
+                task_state.token.as_deref(),
+            )
+            .await;
+            let outcome = {
+                let mut native = task_state.native.lock().await;
+                execute_task(&mut native, &task).await
+            };
+            let status = match outcome {
+                Ok(TaskOutcome::Shuffle {
+                    flight_address,
+                    cache_ids,
+                }) => TaskStatus {
                     job_id: task.job_id.clone(),
                     stage_id: task.stage_id,
                     task_id: task.task_id,
                     task_attempt: task.task_attempt,
-                    state: TaskState::Failed as i32,
-                    error,
+                    state: TaskState::Succeeded as i32,
+                    error: String::new(),
                     result: Vec::new(),
+                    flight_address,
+                    cache_ids,
+                },
+                Ok(TaskOutcome::Result(result)) => TaskStatus {
+                    job_id: task.job_id.clone(),
+                    stage_id: task.stage_id,
+                    task_id: task.task_id,
+                    task_attempt: task.task_attempt,
+                    state: TaskState::Succeeded as i32,
+                    error: String::new(),
+                    result,
                     flight_address: String::new(),
                     cache_ids: Vec::new(),
-                }
-            }
-        };
+                },
+                Err(error) => task_status(&task, TaskState::Failed, error),
+            };
+            let _: Result<ExecutorTaskStatusResponse, String> = post_protobuf(
+                &task_state.client,
+                &format!("{}/task-status", task_state.manager_address),
+                &status,
+                task_state.token.as_deref(),
+            )
+            .await;
+            task_state.running.fetch_sub(1, Ordering::Relaxed);
+            task_state.accepted.lock().await.remove(&key);
+            drop(permit);
+        });
+    }
+    worker_response(
+        StatusCode::ACCEPTED,
+        &LaunchTaskResponse {
+            accepted: true,
+            worker_id: state.worker_id.clone(),
+            message: "accepted".to_string(),
+        },
+    )
+}
 
-        let accepted: Result<ExecutorTaskStatusResponse, String> = post_protobuf(
-            &client,
-            &format!("{control_address}/task-status"),
-            &status,
-            token.as_deref(),
-        )
-        .await;
-        if let Err(error) = accepted {
-            eprintln!("[executor] failed to report task status: {error}");
-        } else {
-            eprintln!(
-                "[executor] task {}:{}/{} status reported",
-                task.job_id, task.stage_id, task.task_id
+async fn purge_shuffle(State(state): State<WorkerState>, body: Bytes) -> Response {
+    let request = match PurgeShuffleRequest::decode(body) {
+        Ok(request) => request,
+        Err(error) => {
+            return worker_response(
+                StatusCode::BAD_REQUEST,
+                &PurgeShuffleResponse {
+                    accepted: false,
+                    message: error.to_string(),
+                },
+            );
+        }
+    };
+    let native = state.native.lock().await;
+    let Some(server) = native.shuffle_server() else {
+        return worker_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &PurgeShuffleResponse {
+                accepted: false,
+                message: "flight server unavailable".to_string(),
+            },
+        );
+    };
+    for purge in request.purges {
+        if let Err(error) = server
+            .purge_shuffle_caches(purge.shuffle_id, &purge.cache_ids)
+            .await
+        {
+            return worker_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &PurgeShuffleResponse {
+                    accepted: false,
+                    message: error.to_string(),
+                },
             );
         }
     }
+    worker_response(
+        StatusCode::OK,
+        &PurgeShuffleResponse {
+            accepted: true,
+            message: "purged".to_string(),
+        },
+    )
+}
+
+fn task_status(task: &TaskDefinition, state: TaskState, error: String) -> TaskStatus {
+    TaskStatus {
+        job_id: task.job_id.clone(),
+        stage_id: task.stage_id,
+        task_id: task.task_id,
+        task_attempt: task.task_attempt,
+        state: state as i32,
+        error,
+        result: Vec::new(),
+        flight_address: String::new(),
+        cache_ids: Vec::new(),
+    }
+}
+
+fn worker_response(message_status: StatusCode, message: &impl Message) -> Response {
+    Response::builder()
+        .status(message_status)
+        .header(CONTENT_TYPE, PROTOBUF_CONTENT_TYPE)
+        .body(axum::body::Body::from(encode(message)))
+        .expect("valid response")
+}
+
+async fn authorize_worker(
+    State(state): State<WorkerState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if let Some(expected) = &state.token {
+        let provided = request
+            .headers()
+            .get(header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok());
+        if provided != Some(&format!("Bearer {expected}")) {
+            return worker_response(
+                StatusCode::UNAUTHORIZED,
+                &LaunchTaskResponse {
+                    accepted: false,
+                    worker_id: state.worker_id.clone(),
+                    message: "unauthorized".to_string(),
+                },
+            );
+        }
+    }
+    next.run(request).await
 }
 
 /// POST the registration payload and return whether the scheduler accepted it.
@@ -254,8 +407,13 @@ async fn register(
     registration: &ExecutorRegistration,
     token: Option<&str>,
 ) -> Result<bool, String> {
-    let response: ExecutorRegistrationResponse =
-        post_protobuf(client, &format!("{control_address}/register"), registration, token).await?;
+    let response: ExecutorRegistrationResponse = post_protobuf(
+        client,
+        &format!("{control_address}/register"),
+        registration,
+        token,
+    )
+    .await?;
     if !response.accepted {
         return Err(format!(
             "scheduler rejected executor registration: {}",
@@ -505,9 +663,7 @@ async fn materialize_shuffle_reads(
 /// Collect the first `ShuffleRead` node encountered per shuffle id.
 fn collect_shuffle_reads(plan: &LogicalPlanRef, reads: &mut HashMap<u64, ShuffleRead>) {
     if let LogicalPlan::ShuffleRead(read) = plan.as_ref() {
-        reads
-            .entry(read.shuffle_id)
-            .or_insert_with(|| read.clone());
+        reads.entry(read.shuffle_id).or_insert_with(|| read.clone());
         return;
     }
     for child in plan.as_ref().children() {
@@ -535,19 +691,20 @@ fn fill_shuffle_dirs(plan: LogicalPlanRef, task_id: u64) -> LogicalPlanRef {
         return plan;
     };
     let dir = format!("{}/task-{task_id}", dir.to_string_lossy());
-    plan.clone().transform_up(|node: LogicalPlanRef| {
-        if let LogicalPlan::ShuffleWrite(write) = node.as_ref() {
-            let mut write = write.clone();
-            if write.shuffle_dirs.is_empty() {
-                write.shuffle_dirs = vec![dir.clone()];
+    plan.clone()
+        .transform_up(|node: LogicalPlanRef| {
+            if let LogicalPlan::ShuffleWrite(write) = node.as_ref() {
+                let mut write = write.clone();
+                if write.shuffle_dirs.is_empty() {
+                    write.shuffle_dirs = vec![dir.clone()];
+                }
+                Ok(Transformed::yes(Arc::new(LogicalPlan::ShuffleWrite(write))))
+            } else {
+                Ok(Transformed::no(node))
             }
-            Ok(Transformed::yes(Arc::new(LogicalPlan::ShuffleWrite(write))))
-        } else {
-            Ok(Transformed::no(node))
-        }
-    })
-    .map(|transformed| transformed.data)
-    .unwrap_or(plan)
+        })
+        .map(|transformed| transformed.data)
+        .unwrap_or(plan)
 }
 
 /// Replace every `ShuffleRead` leaf with an `InMemory` source whose cache key

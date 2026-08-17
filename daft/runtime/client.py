@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import struct
 import time
 import urllib.error
 import urllib.request
@@ -130,6 +131,55 @@ class RuntimeClient:
         result.ParseFromString(self._request("GET", f"/v1/jobs/{job_id}/result"))
         return decode_partitions(result.payload)
 
+    def result_stream(self, job_id: str):
+        """Yield final task partitions as they become available.
+
+        The response is a length-prefixed protobuf stream. Each
+        ``JobResultChunk`` contains one task's DAFTRES1 payload; task chunks
+        are emitted in partition order by the manager. The stream is bounded
+        server-side, so a slow consumer applies backpressure to final-task
+        status delivery.
+        """
+        headers = {"Accept": "application/x-protobuf-stream"}
+        if self.token is not None:
+            headers["Authorization"] = f"Bearer {self.token}"
+        request = urllib.request.Request(
+            f"{self.endpoint}/v1/jobs/{job_id}/result-stream",
+            headers=headers,
+            method="GET",
+        )
+        try:
+            response = urllib.request.urlopen(request, timeout=self.timeout_s)
+        except urllib.error.HTTPError as e:
+            raise RuntimeError(
+                f"Runtime result stream failed ({e.code}): {_decode_error_body(e.read())}"
+            ) from e
+        # urllib applies the timeout only while connecting; propagate it to
+        # the underlying socket so a stalled manager/worker stream cannot
+        # leave the iterator blocked forever.
+        raw_socket = getattr(getattr(response, "fp", None), "raw", None)
+        raw_socket = getattr(raw_socket, "_sock", None)
+        if raw_socket is not None:
+            raw_socket.settimeout(self.timeout_s)
+        with response:
+            while True:
+                prefix = response.read(4)
+                if not prefix:
+                    return
+                if len(prefix) != 4:
+                    raise RuntimeError("truncated result stream length prefix")
+                (length,) = struct.unpack("<I", prefix)
+                payload = response.read(length)
+                if len(payload) != length:
+                    raise RuntimeError("truncated result stream protobuf frame")
+                chunk = runtime_pb2.JobResultChunk()
+                chunk.ParseFromString(payload)
+                if chunk.error:
+                    raise RuntimeError(chunk.error)
+                if chunk.end_of_stream:
+                    return
+                yield from decode_partitions(chunk.payload)
+
     def upload_udf_artifact(
         self,
         payload: bytes,
@@ -217,3 +267,7 @@ class Job:
     def result(self) -> list[MicroPartition]:
         self.wait()
         return self.client.result(self.job_id)
+
+    def iter_result_partitions(self):
+        """Stream final partitions without waiting for the whole Job."""
+        yield from self.client.result_stream(self.job_id)

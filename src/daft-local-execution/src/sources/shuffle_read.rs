@@ -12,10 +12,12 @@ use daft_core::prelude::SchemaRef;
 use daft_io::IOStatsRef;
 use daft_local_plan::{FlightShuffleReadInput, InputId};
 use daft_micropartition::MicroPartition;
+use daft_protocol::daft::v1::ShuffleReadTransport;
 use daft_recordbatch::RecordBatch;
 use daft_shuffles::{client::FlightClientManager, server::flight_server::ShuffleFlightServer};
 use futures::{FutureExt, StreamExt, stream::BoxStream};
 use tracing::instrument;
+use tokio::sync::Semaphore;
 
 use super::source::{Source, SourceStream};
 use crate::{
@@ -31,6 +33,12 @@ pub struct ShuffleReadSource {
     local_server: Arc<ShuffleFlightServer>,
     schema: SchemaRef,
     num_parallel_tasks: usize,
+    partitions: Vec<usize>,
+    read_transport: i32,
+    broadcast: bool,
+    fetch_retries: u64,
+    max_bytes_in_flight: u64,
+    max_concurrency_per_address: u64,
 }
 
 impl ShuffleReadSource {
@@ -42,6 +50,12 @@ impl ShuffleReadSource {
         local_address: String,
         schema: SchemaRef,
         cfg: &DaftExecutionConfig,
+        coalesce_partitions: &[u64],
+        read_transport: i32,
+        broadcast: bool,
+        fetch_retries: u64,
+        max_bytes_in_flight: u64,
+        max_concurrency_per_address: u64,
     ) -> DaftResult<Self> {
         let num_cpus = get_compute_pool_num_threads();
         let num_parallel_tasks = if cfg.scantask_max_parallel > 0 {
@@ -50,8 +64,11 @@ impl ShuffleReadSource {
             num_cpus
         };
 
+        let flight_only = ShuffleReadTransport::try_from(read_transport)
+            .unwrap_or(ShuffleReadTransport::Unspecified)
+            == ShuffleReadTransport::FlightOnly;
         let (local_cache_ids, remote_cache_mapping) =
-            if server_cache_mapping.contains_key(&local_address) {
+            if server_cache_mapping.contains_key(&local_address) && !flight_only {
                 (
                     server_cache_mapping.get(&local_address).cloned(),
                     server_cache_mapping
@@ -77,6 +94,12 @@ impl ShuffleReadSource {
             local_server,
             schema,
             num_parallel_tasks,
+            partitions: coalesce_partitions.iter().map(|value| *value as usize).collect(),
+            read_transport,
+            broadcast,
+            fetch_retries,
+            max_bytes_in_flight,
+            max_concurrency_per_address,
         })
     }
 
@@ -132,13 +155,26 @@ impl ShuffleReadSource {
         let num_parallel_tasks = self.num_parallel_tasks;
         let shuffle_id = self.shuffle_id;
         let schema = self.schema.clone();
+        let configured_partitions = self.partitions;
+        let fetch_retries = self.fetch_retries;
+        let max_concurrency_per_address = self.max_concurrency_per_address;
+        let byte_budget = (self.max_bytes_in_flight > 0).then(|| {
+            Arc::new(Semaphore::new(
+                usize::try_from(self.max_bytes_in_flight)
+                    .unwrap_or(Semaphore::MAX_PERMITS)
+                    .clamp(1, Semaphore::MAX_PERMITS),
+            ))
+        });
 
         let local_cache_ids = self.local_cache_ids;
         let remote_cache_mapping = self.remote_cache_mapping;
 
         let io_runtime = get_io_runtime(true);
         io_runtime.spawn(async move {
-            let mut client_manager = FlightClientManager::new();
+            let mut client_manager = FlightClientManager::with_options(
+                fetch_retries,
+                max_concurrency_per_address,
+            );
             let mut task_set = JoinSet::new();
             let mut pending_tasks: VecDeque<(InputId, FlightShuffleReadInput)> = VecDeque::new();
             let mut input_id_pending_counts: HashMap<InputId, usize> = HashMap::new();
@@ -160,6 +196,7 @@ impl ShuffleReadSource {
                         schema.clone(),
                         output_sender.clone(),
                         input_id,
+                        byte_budget.clone(),
                     ));
                 }
 
@@ -179,10 +216,22 @@ impl ShuffleReadSource {
                                 }
                             }
                             Some((input_id, inputs)) => {
-                                let num_inputs = inputs.len();
+                                let num_inputs = if configured_partitions.is_empty() {
+                                    inputs.len()
+                                } else {
+                                    inputs.len() * configured_partitions.len()
+                                };
                                 *input_id_pending_counts.entry(input_id).or_insert(0) += num_inputs;
                                 for input in inputs {
-                                    pending_tasks.push_back((input_id, input));
+                                    if configured_partitions.is_empty() {
+                                        pending_tasks.push_back((input_id, input));
+                                    } else {
+                                        for partition_idx in &configured_partitions {
+                                            pending_tasks.push_back((input_id, FlightShuffleReadInput {
+                                                partition_idx: *partition_idx,
+                                            }));
+                                        }
+                                    }
                                 }
                             }
                             None => {
@@ -241,10 +290,23 @@ async fn forward_partition_stream(
     schema: SchemaRef,
     sender: Sender<PipelineMessage>,
     input_id: InputId,
+    byte_budget: Option<Arc<Semaphore>>,
 ) -> DaftResult<(InputId, usize)> {
     let mut num_morsels = 0;
     while let Some(batch) = stream.next().await {
-        let mp = MicroPartition::new_loaded(schema.clone(), vec![batch?].into(), None);
+        let batch = batch?;
+        let permit = if let Some(budget) = &byte_budget {
+            let requested = batch
+                .size_bytes()
+                .clamp(1, u32::MAX as usize)
+                .min(Semaphore::MAX_PERMITS);
+            Some(budget.clone().acquire_many_owned(requested as u32).await.map_err(|e| {
+                DaftError::External(e.to_string().into())
+            })?)
+        } else {
+            None
+        };
+        let mp = MicroPartition::new_loaded(schema.clone(), vec![batch].into(), None);
         if sender
             .send(PipelineMessage::Morsel {
                 input_id,
@@ -255,6 +317,7 @@ async fn forward_partition_stream(
         {
             break;
         }
+        drop(permit);
         num_morsels += 1;
     }
     Ok((input_id, num_morsels))
@@ -275,7 +338,10 @@ impl Source for ShuffleReadSource {
     }
 
     fn multiline_display(&self) -> Vec<String> {
-        vec![format!("ShuffleRead: shuffle_id={}", self.shuffle_id)]
+        vec![format!(
+            "ShuffleRead: shuffle_id={}, transport={}, broadcast={}, partitions={:?}",
+            self.shuffle_id, self.read_transport, self.broadcast, self.partitions
+        )]
     }
 
     #[instrument(skip_all, name = "ShuffleReadSource::get_data")]

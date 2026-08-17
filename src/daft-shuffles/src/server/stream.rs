@@ -1,9 +1,10 @@
-use std::io::{ErrorKind, SeekFrom};
+use std::{io::ErrorKind, pin::Pin, task::Context};
 
 use arrow_flight::FlightData;
+use bytes::Bytes;
 use common_error::{DaftError, DaftResult};
-use futures::Stream;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeek, AsyncSeekExt};
+use futures::{Stream, StreamExt};
+use tokio::io::{AsyncRead, AsyncReadExt, ReadBuf};
 
 /// Reading state maintenance
 struct ReadState<R> {
@@ -25,11 +26,11 @@ const CONTINUATION_MARKER: i32 = -1;
 /// over flight. This is an optimization where we skip converting the ipc files to RecordBatches
 /// and instead read the data directly into FlightData, since we already know that the data is in
 /// arrow ipc stream format.
-pub struct FlightDataStreamReader<R: AsyncRead + AsyncSeek + Unpin> {
+pub struct FlightDataStreamReader<R: AsyncRead + Unpin> {
     state: Option<ReadState<R>>,
 }
 
-impl<R: AsyncRead + AsyncSeek + Unpin> FlightDataStreamReader<R> {
+impl<R: AsyncRead + Unpin> FlightDataStreamReader<R> {
     pub async fn try_new(mut reader: R) -> DaftResult<Self> {
         // Skip stream metadata in the file since we don't need it when sending data over flight
         skip_stream_metadata(&mut reader).await?;
@@ -51,9 +52,7 @@ impl<R: AsyncRead + AsyncSeek + Unpin> FlightDataStreamReader<R> {
 }
 
 /// Skip stream metadata on reader. We don't need it when sending data over flight.
-pub async fn skip_stream_metadata<R: AsyncRead + AsyncSeek + Unpin>(
-    reader: &mut R,
-) -> DaftResult<()> {
+pub async fn skip_stream_metadata<R: AsyncRead + Unpin>(reader: &mut R) -> DaftResult<()> {
     let mut meta_len = reader.read_i32_le().await?;
     if meta_len == CONTINUATION_MARKER {
         meta_len = reader.read_i32_le().await?;
@@ -63,7 +62,18 @@ pub async fn skip_stream_metadata<R: AsyncRead + AsyncSeek + Unpin>(
         .try_into()
         .map_err(|_| arrow_schema::ArrowError::IpcError("NegativeFooterLength".to_string()))?;
 
-    reader.seek(SeekFrom::Current(meta_len as i64)).await?;
+    // Read and discard the metadata bytes. Unlike ``seek``, this works on
+    // non-seekable readers (e.g. object-store byte streams from S3).
+    let meta_len: usize = meta_len
+        .try_into()
+        .map_err(|_| arrow_schema::ArrowError::IpcError("NegativeFooterLength".to_string()))?;
+    let mut remaining = meta_len;
+    let mut buf = [0u8; 64 * 1024];
+    while remaining > 0 {
+        let to_read = remaining.min(buf.len());
+        reader.read_exact(&mut buf[..to_read]).await?;
+        remaining -= to_read;
+    }
     Ok(())
 }
 
@@ -114,4 +124,64 @@ async fn process_next<R: AsyncRead + Unpin>(mut state: ReadState<R>) -> DaftResu
     };
 
     Ok(StreamState::Ready((state, flight_data)))
+}
+
+/// Adapts a byte stream (e.g. an object-store `GetResult::Stream`) to
+/// [`AsyncRead`] so the IPC reader can consume shuffle files from S3/GCS/etc.
+pub struct ObjectStreamReader {
+    stream: futures::stream::BoxStream<'static, Result<Bytes, std::io::Error>>,
+    buf: Bytes,
+    pos: usize,
+    done: bool,
+}
+
+impl ObjectStreamReader {
+    pub fn new(stream: futures::stream::BoxStream<'static, Result<Bytes, daft_io::Error>>) -> Self {
+        Self {
+            stream: stream
+                .map(|result| {
+                    result.map_err(|e| {
+                        std::io::Error::other(format!("object read failed: {e}"))
+                    })
+                })
+                .boxed(),
+            buf: Bytes::new(),
+            pos: 0,
+            done: false,
+        }
+    }
+}
+
+impl AsyncRead for ObjectStreamReader {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        loop {
+            if self.pos < self.buf.len() {
+                let n = std::cmp::min(self.buf.len() - self.pos, buf.remaining());
+                buf.put_slice(&self.buf[self.pos..self.pos + n]);
+                self.pos += n;
+                return std::task::Poll::Ready(Ok(()));
+            }
+            if self.done {
+                return std::task::Poll::Ready(Ok(()));
+            }
+            match self.stream.poll_next_unpin(cx) {
+                std::task::Poll::Ready(Some(Ok(bytes))) => {
+                    self.buf = bytes;
+                    self.pos = 0;
+                }
+                std::task::Poll::Ready(Some(Err(e))) => {
+                    return std::task::Poll::Ready(Err(e));
+                }
+                std::task::Poll::Ready(None) => {
+                    self.done = true;
+                    return std::task::Poll::Ready(Ok(()));
+                }
+                std::task::Poll::Pending => return std::task::Poll::Pending,
+            }
+        }
+    }
 }

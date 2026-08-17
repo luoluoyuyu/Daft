@@ -11,12 +11,13 @@ use arrow_ipc::writer::IpcWriteOptions;
 use common_error::{DaftError, DaftResult};
 use common_runtime::RuntimeTask;
 use daft_core::prelude::SchemaRef;
+use daft_io::{GetResult, SourceType, get_io_client, parse_url};
 use daft_recordbatch::RecordBatch;
 use futures::{Stream, StreamExt, TryStreamExt, stream::BoxStream};
 use tokio::{io::BufReader, sync::Mutex};
 use tonic::{Request, Response, Status, transport::Server};
 
-use super::stream::FlightDataStreamReader;
+use super::stream::{FlightDataStreamReader, ObjectStreamReader};
 use crate::{
     client::flight_client::FlightRecordBatchStreamToDaftRecordBatchStream,
     shuffle_cache::ShuffleCache,
@@ -71,11 +72,66 @@ impl ParsedTicket {
 #[derive(Clone, Default)]
 pub struct ShuffleFlightServer {
     shuffle_caches: Arc<Mutex<HashMap<u64, Vec<Arc<ShuffleCache>>>>>,
+    io_config: Option<Arc<daft_io::IOConfig>>,
 }
 
 impl ShuffleFlightServer {
     pub fn new() -> Self {
-        Self::default()
+        Self::with_io_config(None)
+    }
+
+    /// Create a server with an optional IO config for reading object-store
+    /// (S3/GCS/...) shuffle files directly from any executor.
+    pub fn with_io_config(io_config: Option<Arc<daft_io::IOConfig>>) -> Self {
+        Self {
+            shuffle_caches: Arc::new(Mutex::new(HashMap::new())),
+            io_config,
+        }
+    }
+
+    /// Open a shuffle partition file (local path or object-store URI) and
+    /// return a stream of raw Flight data frames.
+    async fn open_flight_data_stream(
+        &self,
+        file_path: String,
+    ) -> DaftResult<BoxStream<'static, DaftResult<FlightData>>> {
+        let (source_type, _) = parse_url(&file_path)?;
+        match source_type {
+            SourceType::File => {
+                let file_path = std::path::PathBuf::from(&file_path);
+                let file = tokio::fs::File::open(&file_path)
+                    .await
+                    .map_err(DaftError::IoError)?;
+                let reader = FlightDataStreamReader::try_new(BufReader::new(file)).await?;
+                Ok(reader.into_stream().boxed())
+            }
+            _ => {
+                let io_config = self.io_config.clone().ok_or_else(|| {
+                    DaftError::ValueError(format!(
+                        "IO config required to read object-store shuffle file: {file_path}"
+                    ))
+                })?;
+                let io_client = get_io_client(true, io_config)?;
+                let (source, object_path) = io_client
+                    .get_source_and_path(&file_path)
+                    .await
+                    .map_err(|e| DaftError::External(e.into()))?;
+                let get_result = source
+                    .get(&object_path, None, None)
+                    .await
+                    .map_err(|e| DaftError::External(e.into()))?;
+                let stream = match get_result {
+                    GetResult::Stream(byte_stream, _, _, _) => byte_stream,
+                    GetResult::File(_) => {
+                        return Err(DaftError::InternalError(format!(
+                            "Expected a byte stream for object-store shuffle file {file_path}"
+                        )));
+                    }
+                };
+                let reader = FlightDataStreamReader::try_new(ObjectStreamReader::new(stream)).await?;
+                Ok(reader.into_stream().boxed())
+            }
+        }
     }
 
     pub async fn register_shuffle_cache(
@@ -144,7 +200,7 @@ impl ShuffleFlightServer {
         };
         // Remove the spill files off the lock: this is blocking I/O.
         for cache in removed {
-            cache.cleanup_files();
+            cache.cleanup_files().await;
         }
         Ok(())
     }
@@ -209,17 +265,16 @@ impl ShuffleFlightServer {
                 DaftError::ValueError(format!("Shuffle cache not found for id: {}", shuffle_id))
             })?;
 
+        let this = self.clone();
         let file_path_stream = futures::stream::iter(file_paths);
         let flight_data_stream = file_path_stream
             .then(move |file_path| {
+                let this = this.clone();
                 let schema = schema.clone();
                 async move {
-                    let file = tokio::fs::File::open(file_path)
-                        .await
-                        .map_err(DaftError::IoError)?;
-                    let reader = FlightDataStreamReader::try_new(BufReader::new(file))
+                    let reader = this
+                        .open_flight_data_stream(file_path)
                         .await?
-                        .into_stream()
                         .map_err(|e| FlightError::from_external_error(Box::new(e)));
 
                     let arrow_schema = schema.to_arrow().map_err(|e| {
@@ -315,22 +370,18 @@ impl FlightService for ShuffleFlightServer {
                 ))
             })?;
 
+        let this = self.clone();
         let file_path_stream = futures::stream::iter(file_paths);
         let flight_data_stream = file_path_stream
-            .then(|file_path| async move {
-                let file = tokio::fs::File::open(file_path)
-                    .await
-                    .map_err(|e| Status::internal(format!("Error opening file: {}", e)))?;
-                let reader = FlightDataStreamReader::try_new(BufReader::new(file))
-                    .await
-                    .map_err(|e| {
-                        Status::internal(format!("Error creating flight data reader: {}", e))
-                    })?;
-                Ok::<_, Status>(
-                    reader
-                        .into_stream()
-                        .map_err(|e| Status::internal(e.to_string())),
-                )
+            .then(move |file_path| {
+                let this = this.clone();
+                async move {
+                    let stream = this
+                        .open_flight_data_stream(file_path)
+                        .await
+                        .map_err(|e| Status::internal(format!("Error opening shuffle file: {e}")))?;
+                    Ok::<_, Status>(stream.map_err(|e| Status::internal(e.to_string())))
+                }
             })
             .try_flatten();
 

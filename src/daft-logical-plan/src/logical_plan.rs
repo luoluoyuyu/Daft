@@ -628,6 +628,7 @@ impl LogicalPlan {
                     repartition_spec,
                     shuffle_dirs,
                     compression,
+                    storage_uri,
                     ..
                 }) => Self::ShuffleWrite(ShuffleWrite::new(
                     input.clone(),
@@ -636,7 +637,8 @@ impl LogicalPlan {
                     repartition_spec.clone(),
                     shuffle_dirs.clone(),
                     compression.clone(),
-                )),
+                )
+                .with_storage_uri(storage_uri.clone())),
                 Self::ShuffleRead(..) => panic!("ShuffleRead is a leaf node"),
                 Self::Aggregate(Aggregate {
                     aggregations,
